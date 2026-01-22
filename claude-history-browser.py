@@ -68,15 +68,84 @@ class ClaudeHistoryBrowser:
                     continue
         return messages
 
+    def extract_session_metadata(self, session_file: Path) -> Optional[Dict]:
+        """Extract metadata from a session .jsonl file directly.
+
+        Used for sessions that aren't in the index yet (active or recently closed).
+        """
+        try:
+            messages = self.load_session_messages(session_file)
+            if not messages:
+                return None
+
+            # Get first user message
+            first_user_msg = next((m for m in messages if m.get('message', {}).get('role') == 'user'), None)
+            if not first_user_msg:
+                return None
+
+            first_prompt = self._extract_message_text(first_user_msg)
+            if len(first_prompt) > 150:
+                first_prompt = first_prompt[:150] + "…"
+
+            # Get timestamps
+            created = first_user_msg.get('timestamp', '')
+            modified = messages[-1].get('timestamp', created)
+
+            # Get session ID from filename
+            session_id = session_file.stem
+
+            # Get git branch and project path from any message
+            git_branch = messages[0].get('gitBranch', 'N/A')
+            project_path = messages[0].get('cwd', 'N/A')
+
+            # Generate summary from first prompt
+            summary = first_prompt.split('\n')[0][:100]
+            if len(summary) < len(first_prompt.split('\n')[0]):
+                summary += "..."
+
+            return {
+                'sessionId': session_id,
+                'fullPath': str(session_file),
+                'firstPrompt': first_prompt,
+                'summary': summary,
+                'messageCount': len(messages),
+                'created': created,
+                'modified': modified,
+                'gitBranch': git_branch,
+                'projectPath': project_path,
+                'isSidechain': False,
+                'isUnindexed': True  # Mark as unindexed
+            }
+        except Exception:
+            return None
+
     def get_all_sessions(self) -> List[Dict]:
-        """Get all sessions from all projects."""
+        """Get all sessions from all projects, including unindexed ones."""
         all_sessions = []
+
         for project_dir in self.find_all_projects():
+            # Load indexed sessions
             index = self.load_sessions_index(project_dir)
+            indexed_session_ids = set()
+
             for entry in index.get('entries', []):
                 entry['project_dir'] = str(project_dir)
                 entry['project_name'] = project_dir.name
+                entry['isUnindexed'] = False
                 all_sessions.append(entry)
+                indexed_session_ids.add(entry['sessionId'])
+
+            # Find unindexed .jsonl files
+            for jsonl_file in project_dir.glob('*.jsonl'):
+                session_id = jsonl_file.stem
+                if session_id not in indexed_session_ids:
+                    # This is an unindexed session
+                    metadata = self.extract_session_metadata(jsonl_file)
+                    if metadata:
+                        metadata['project_dir'] = str(project_dir)
+                        metadata['project_name'] = project_dir.name
+                        all_sessions.append(metadata)
+
         return all_sessions
 
     def search_sessions(self, query: str, sessions: List[Dict]) -> List[Dict]:
@@ -194,8 +263,16 @@ class RichDisplay:
             browser = ClaudeHistoryBrowser()
             date = browser.format_date(session.get('modified', session.get('created', '')))
             summary = session.get('summary', 'No summary')
-            if len(summary) > 57:
-                summary = summary[:54] + "..."
+
+            # Add marker for unindexed (active/recent) sessions
+            if session.get('isUnindexed', False):
+                summary = "🔴 " + summary
+                max_len = 55  # Account for emoji
+            else:
+                max_len = 57
+
+            if len(summary) > max_len:
+                summary = summary[:max_len-3] + "..."
             msg_count = str(session.get('messageCount', 0))
             branch = session.get('gitBranch', 'N/A')
             if len(branch) > 51:
@@ -205,6 +282,11 @@ class RichDisplay:
 
         console.print(table)
         console.print(f"\nTotal sessions: {len(sessions)}", style="bold")
+
+        # Show note about unindexed sessions
+        unindexed_count = sum(1 for s in sessions if s.get('isUnindexed', False))
+        if unindexed_count > 0:
+            console.print(f"🔴 = Active/recent session (not yet indexed): {unindexed_count}", style="dim")
 
     @staticmethod
     def show_session_detail(session: Dict, messages: List[Dict], max_length: Optional[int] = 2000):
@@ -308,13 +390,28 @@ class BasicDisplay:
 
         for idx, session in enumerate(sorted_sessions, 1):
             date = browser.format_date(session.get('modified', session.get('created', '')))
-            summary = session.get('summary', 'No summary')[:57]
+            summary = session.get('summary', 'No summary')
+
+            # Add marker for unindexed (active/recent) sessions
+            if session.get('isUnindexed', False):
+                summary = "* " + summary
+                max_len = 58
+            else:
+                max_len = 60
+
+            summary = summary[:max_len-3] if len(summary) > max_len else summary
             msg_count = session.get('messageCount', 0)
             branch = session.get('gitBranch', 'N/A')[:51]
 
             print(f"{idx:<4} {date:<16} {summary:<60} {msg_count:<6} {branch:<54}")
 
-        print(f"\nTotal sessions: {len(sessions)}\n")
+        print(f"\nTotal sessions: {len(sessions)}")
+
+        # Show note about unindexed sessions
+        unindexed_count = sum(1 for s in sessions if s.get('isUnindexed', False))
+        if unindexed_count > 0:
+            print(f"* = Active/recent session (not yet indexed): {unindexed_count}")
+        print()
 
     @staticmethod
     def show_session_detail(session: Dict, messages: List[Dict], max_length: Optional[int] = 2000):
