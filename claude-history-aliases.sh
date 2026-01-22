@@ -8,7 +8,8 @@
 #   source /path/to/claude-code-history/claude-history-aliases.sh
 
 # Get the directory where this script is located
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Use 'builtin cd' to avoid issues with aliased cd commands
+SCRIPT_DIR="$(builtin cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_HISTORY_BROWSER="$SCRIPT_DIR/claude-history-browser.py"
 
 # Force wide terminal for better table display
