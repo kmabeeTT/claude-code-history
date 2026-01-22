@@ -207,8 +207,14 @@ class RichDisplay:
         console.print(f"\nTotal sessions: {len(sessions)}", style="bold")
 
     @staticmethod
-    def show_session_detail(session: Dict, messages: List[Dict]):
-        """Display detailed view of a session."""
+    def show_session_detail(session: Dict, messages: List[Dict], max_length: Optional[int] = 2000):
+        """Display detailed view of a session.
+
+        Args:
+            session: Session metadata dictionary
+            messages: List of message dictionaries
+            max_length: Maximum message length before truncation. None for no limit, 0 for no truncation.
+        """
         console.print()
 
         # Session metadata panel
@@ -240,9 +246,9 @@ class RichDisplay:
 
             title = f"{emoji} {role.upper()} - {timestamp}"
 
-            # Truncate very long messages
-            if len(content) > 2000:
-                content = content[:2000] + f"\n\n... [dim](message truncated, {len(content)} total chars)[/dim]"
+            # Truncate very long messages if max_length is set
+            if max_length is not None and max_length > 0 and len(content) > max_length:
+                content = content[:max_length] + f"\n\n... [dim](message truncated, {len(content)} total chars)[/dim]"
 
             console.print(Panel(content, title=title, border_style=style))
             console.print()
@@ -311,8 +317,14 @@ class BasicDisplay:
         print(f"\nTotal sessions: {len(sessions)}\n")
 
     @staticmethod
-    def show_session_detail(session: Dict, messages: List[Dict]):
-        """Display detailed view of a session."""
+    def show_session_detail(session: Dict, messages: List[Dict], max_length: Optional[int] = 2000):
+        """Display detailed view of a session.
+
+        Args:
+            session: Session metadata dictionary
+            messages: List of message dictionaries
+            max_length: Maximum message length before truncation. None for no limit, 0 for no truncation.
+        """
         browser = ClaudeHistoryBrowser()
 
         print("\n" + "=" * 100)
@@ -333,9 +345,13 @@ class BasicDisplay:
             print(f"\n{'─' * 100}")
             print(f"{role.upper()} - {timestamp}")
             print(f"{'─' * 100}")
-            print(content[:2000])
-            if len(content) > 2000:
+
+            # Truncate if max_length is set
+            if max_length is not None and max_length > 0 and len(content) > max_length:
+                print(content[:max_length])
                 print(f"\n... (message truncated, {len(content)} total chars)")
+            else:
+                print(content)
             print()
 
     @staticmethod
@@ -374,6 +390,8 @@ Examples:
   %(prog)s search "test infra"            # Search in summaries/prompts
   %(prog)s grep "CompilerConfig"          # Search in all message content
   %(prog)s view 5                         # View session #5 from list
+  %(prog)s view 5 --max-message-length 0  # View with no truncation
+  %(prog)s view 5 --max-message-length 5000  # Truncate at 5000 chars
   %(prog)s view SESSION_ID                # View by session ID
   %(prog)s stats                          # Show statistics
         """
@@ -394,6 +412,8 @@ Examples:
                        help='Filter sessions since date (YYYY-MM-DD)')
     parser.add_argument('--until',
                        help='Filter sessions until date (YYYY-MM-DD)')
+    parser.add_argument('--max-message-length', type=int, default=2000,
+                       help='Maximum message length before truncation (default: 2000). Use 0 for no truncation.')
 
     args = parser.parse_args()
 
@@ -471,7 +491,9 @@ Examples:
                 return
 
         messages = browser.load_session_messages(Path(session['fullPath']))
-        display.show_session_detail(session, messages)
+        # Convert max_length: 0 means no truncation (None), otherwise use the value
+        max_length = None if args.max_message_length == 0 else args.max_message_length
+        display.show_session_detail(session, messages, max_length)
 
     elif args.command == 'stats':
         sessions = browser.get_all_sessions()
