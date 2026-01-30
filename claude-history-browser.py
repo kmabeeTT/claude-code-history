@@ -28,7 +28,22 @@ except ImportError:
     print("Warning: 'rich' library not found. Install with: pip install rich")
     print("Falling back to basic output.\n")
 
-console = Console() if HAS_RICH else None
+console = None  # Initialized after argument parsing
+
+
+def init_console(color_mode: str = 'always'):
+    """Initialize the rich console with the specified color mode."""
+    global console
+    if not HAS_RICH:
+        console = None
+        return
+
+    if color_mode == 'always':
+        console = Console(force_terminal=True)
+    elif color_mode == 'never':
+        console = Console(force_terminal=False, no_color=True)
+    else:  # auto
+        console = Console()
 
 
 class ClaudeHistoryBrowser:
@@ -848,8 +863,13 @@ Examples:
                        help='Include thinking blocks in view output (excluded by default)')
     parser.add_argument('--include-empty', action='store_true',
                        help='Include empty messages (tool calls, etc.) in view output')
+    parser.add_argument('--color', choices=['always', 'auto', 'never'], default='always',
+                       help='Color output mode (default: always). Use "always" for piping to less -r')
 
     args = parser.parse_args()
+
+    # Initialize console with color mode
+    init_console(args.color)
 
     browser = ClaudeHistoryBrowser()
     display = RichDisplay if HAS_RICH else BasicDisplay
