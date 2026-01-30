@@ -265,7 +265,7 @@ class ClaudeHistoryBrowser:
             return True
 
         # Short message with transitional phrase is likely transitional
-        if len(text) < 150:
+        if len(text) < 200:
             return True
 
         return False
@@ -478,7 +478,7 @@ class RichDisplay:
                 # Show grouped transitional messages as collapsed
                 console.print(Panel(
                     f"[dim]{len(transitional_group)} transitional messages:[/dim]\n" +
-                    "\n".join(f"[dim]• {m['content'][:80]}{'...' if len(m['content']) > 80 else ''}[/dim]"
+                    "\n".join(f"[dim]• {m['content'][:150]}{'...' if len(m['content']) > 150 else ''}[/dim]"
                               for m in transitional_group),
                     title="🤖 ASSISTANT - working...",
                     border_style="dim blue"
@@ -707,7 +707,7 @@ class BasicDisplay:
                 print(f"ASSISTANT - working... ({len(transitional_group)} transitional messages)")
                 print(f"{'─' * 100}")
                 for m in transitional_group:
-                    preview = m['content'][:80] + '...' if len(m['content']) > 80 else m['content']
+                    preview = m['content'][:150] + '...' if len(m['content']) > 150 else m['content']
                     print(f"  • {preview}")
                 print()
                 grouped_count += len(transitional_group)
