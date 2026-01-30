@@ -530,10 +530,14 @@ class RichDisplay:
             title = f"{emoji} {role.upper()} - {timestamp}"
 
             # Truncate very long messages if max_length is set
+            # Special case: "This session is being continued" messages use 2000 char limit
             truncated = False
             original_len = len(content)
-            if max_length is not None and max_length > 0 and len(content) > max_length:
-                content = content[:max_length]
+            effective_max = max_length
+            if content.lower().startswith("this session is being continued"):
+                effective_max = min(max_length, 2000) if max_length and max_length > 0 else 2000
+            if effective_max is not None and effective_max > 0 and len(content) > effective_max:
+                content = content[:effective_max]
                 truncated = True
 
             # Render markdown (tables, code blocks, etc.) for prettier output
@@ -545,7 +549,7 @@ class RichDisplay:
 
             console.print(Panel(rendered_content, title=title, border_style=style))
             if truncated:
-                console.print(f"[dim]  ... (message truncated, showing {max_length} of {original_len} chars)[/dim]")
+                console.print(f"[dim]  ... (message truncated, showing {effective_max} of {original_len} chars)[/dim]")
             console.print()
 
         for pm in processed_msgs:
@@ -748,8 +752,12 @@ class BasicDisplay:
             print(f"{'─' * 100}")
 
             content = pm['content']
-            if max_length is not None and max_length > 0 and len(content) > max_length:
-                print(content[:max_length])
+            # Special case: "This session is being continued" messages use 2000 char limit
+            effective_max = max_length
+            if content.lower().startswith("this session is being continued"):
+                effective_max = min(max_length, 2000) if max_length and max_length > 0 else 2000
+            if effective_max is not None and effective_max > 0 and len(content) > effective_max:
+                print(content[:effective_max])
                 print(f"\n... (message truncated, {len(content)} total chars)")
             else:
                 print(content)
@@ -834,8 +842,8 @@ Examples:
                        help='Filter sessions since date (YYYY-MM-DD)')
     parser.add_argument('--until',
                        help='Filter sessions until date (YYYY-MM-DD)')
-    parser.add_argument('--max-message-length', type=int, default=2000,
-                       help='Maximum message length before truncation (default: 2000). Use 0 for no truncation.')
+    parser.add_argument('--max-message-length', type=int, default=4000,
+                       help='Maximum message length before truncation (default: 4000). Use 0 for no truncation.')
     parser.add_argument('--include-thinking', action='store_true',
                        help='Include thinking blocks in view output (excluded by default)')
     parser.add_argument('--include-empty', action='store_true',
