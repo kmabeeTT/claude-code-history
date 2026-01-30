@@ -4,13 +4,15 @@ A beautiful terminal-based tool for browsing and searching your Claude Code chat
 
 ## Features
 
-- 📋 **List all conversations** with summary, date, message count, and branch info
+- 📋 **List all conversations** with summary, date, message count, branch, and project path
 - 🔍 **Search** by summary, first prompt, or branch name
 - 🔎 **Deep grep** through all message content
-- 👁️ **View full conversations** with formatted messages
+- 👁️ **View full conversations** with formatted messages (thinking/tool calls filtered by default)
 - 📊 **Statistics** about your chat history
 - 🎨 **Beautiful terminal UI** using the `rich` library
-- 🗓️ **Filter** by date range or branch
+- 🗓️ **Filter** by date range, branch, or project path
+- ✅ **Index status** column shows which sessions have AI-generated summaries
+- 📐 **Dynamic column widths** adjust to content for cleaner output
 
 ## Installation
 
@@ -69,6 +71,9 @@ source /path/to/claude-code-history/claude-history-aliases.sh
 # Filter by branch
 ./claude-history-browser.py list --branch feature/my-branch
 
+# Filter by project path (substring match)
+./claude-history-browser.py list --project liquidity-bot
+
 # Filter by date range
 ./claude-history-browser.py list --since 2026-01-20
 ./claude-history-browser.py list --until 2026-01-21
@@ -108,6 +113,15 @@ source /path/to/claude-code-history/claude-history-aliases.sh
 
 # View by session ID
 ./claude-history-browser.py view 81b9f767-88c1-4e70-9d90-4cc77c92b4f7
+
+# View with no message truncation
+./claude-history-browser.py view 1 --max-message-length 0
+
+# Include thinking blocks (hidden by default)
+./claude-history-browser.py view 1 --include-thinking
+
+# Include empty messages like tool calls (hidden by default)
+./claude-history-browser.py view 1 --include-empty
 ```
 
 ### Statistics
@@ -137,17 +151,23 @@ source /path/to/claude-code-history/claude-history-aliases.sh
 
 ### List View
 ```
-                              Claude Code Sessions
-╭───┬────────────────┬──────────────────────────────────────────────┬──────────┬────────────────────────╮
-│ # │ Date           │ Summary                                      │ Messages │ Branch                 │
-├───┼────────────────┼──────────────────────────────────────────────┼──────────┼────────────────────────┤
-│ 1 │ 2026-01-22 ... │ vLLM version control and v0.13.0 upgrade ... │ 8        │ feature/qwen3_embe...  │
-│ 2 │ 2026-01-22 ... │ TTNN RMS Norm L1 Memory Overflow Debugging   │ 4        │ feature/qwen3_embe...  │
-│ 3 │ 2026-01-22 ... │ Fix JAX BFP8 training with nested jit ...    │ 15       │ feature/bfp8_model...  │
-╰───┴────────────────┴──────────────────────────────────────────────┴──────────┴────────────────────────╯
+                                        Claude Code Sessions
+╭────┬──────────────────┬─────┬────────────────────────────────────────────┬──────┬────────┬─────────────────────╮
+│ #  │ Date             │ IDX │ Summary                                    │ Msgs │ Branch │ Project             │
+├────┼──────────────────┼─────┼────────────────────────────────────────────┼──────┼────────┼─────────────────────┤
+│ 1  │ 2026-01-30 19:44 │     │ Current active session...                  │ 101  │ main   │ ~/project/myapp     │
+│ 2  │ 2026-01-30 18:54 │ ✓   │ Implementing Robust Auto-Switching System  │ 71   │ main   │ ~/project/bot       │
+│ 3  │ 2026-01-28 05:31 │ ✓   │ Auto-switch regime system improvements     │ 27   │ main   │ ~/project/bot       │
+╰────┴──────────────────┴─────┴────────────────────────────────────────────┴──────┴────────┴─────────────────────╯
 
-Total sessions: 15
+Total sessions: 26
+IDX column: ✓ = indexed, blank = not yet indexed (3 unindexed)
 ```
+
+**Column notes:**
+- **IDX**: Shows ✓ if session has an AI-generated summary, blank if not yet indexed
+- **Project**: Shows project path with `~` for home directory
+- Columns dynamically resize based on content
 
 ### View Detail
 Shows a beautiful panel with:
@@ -165,8 +185,16 @@ Shows:
 
 The tool reads from `~/.claude/` directory where Claude Code stores all chat histories:
 - Sessions are stored in `~/.claude/projects/`
-- Each project has a `sessions-index.json` with metadata
+- Each project has a `sessions-index.json` with metadata and AI-generated summaries
 - Individual conversations are in `.jsonl` files (JSON Lines format)
+
+### Indexed vs Unindexed Sessions
+
+Claude Code uses **lazy indexing** - sessions are indexed when you close the *next* session, not the current one:
+- **Indexed (✓)**: Has AI-generated summary in `sessions-index.json`
+- **Unindexed (blank)**: Session exists but not yet in index (active or never revisited)
+
+To index old sessions, simply start and `/exit` a new session in that project directory.
 
 ## Tips
 
@@ -174,6 +202,8 @@ The tool reads from `~/.claude/` directory where Claude Code stores all chat his
 2. **Use search for topic searches**: If you remember the topic but not exact terms, use `search`
 3. **Pipe to less for long outputs**: `./claude-history-browser.py view 1 | less`
 4. **Combine with shell tools**: `./claude-history-browser.py list | grep qwen`
+5. **Filter by project**: Use `--project` to quickly find sessions from a specific codebase
+6. **Clean view output**: By default, tool calls and thinking blocks are hidden - use `--include-thinking` or `--include-empty` to see them
 
 ## Troubleshooting
 

@@ -186,8 +186,13 @@ class ClaudeHistoryBrowser:
 
         return results
 
-    def _extract_message_text(self, msg: Dict) -> str:
-        """Extract text content from a message."""
+    def _extract_message_text(self, msg: Dict, include_thinking: bool = False) -> str:
+        """Extract text content from a message.
+
+        Args:
+            msg: Message dictionary
+            include_thinking: Whether to include thinking blocks (default False)
+        """
         message = msg.get('message', {})
         content = message.get('content', '')
 
@@ -199,8 +204,8 @@ class ClaudeHistoryBrowser:
                 if isinstance(item, dict):
                     if item.get('type') == 'text':
                         texts.append(item.get('text', ''))
-                    elif item.get('type') == 'thinking':
-                        texts.append(item.get('thinking', ''))
+                    elif item.get('type') == 'thinking' and include_thinking:
+                        texts.append(f"[thinking] {item.get('thinking', '')}")
                 elif isinstance(item, str):
                     texts.append(item)
             return ' '.join(texts)
@@ -248,37 +253,77 @@ class RichDisplay:
     @staticmethod
     def show_sessions_table(sessions: List[Dict], title: str = "Claude Code Sessions"):
         """Display sessions in a beautiful table."""
-        table = Table(title=title, box=box.ROUNDED, show_lines=False)
-
-        table.add_column("#", style="dim", width=4)
-        table.add_column("Date", style="cyan", width=16)
-        table.add_column("Summary", style="bold", width=60)
-        table.add_column("Messages", justify="center", style="green", width=8)
-        table.add_column("Branch", style="yellow", width=54)
-
         # Sort by modified date (newest first)
         sorted_sessions = sorted(sessions, key=lambda x: x.get('modified', ''), reverse=True)
 
+        # Prepare data and calculate dynamic column widths
+        browser = ClaudeHistoryBrowser()
+        home_dir = os.path.expanduser("~")
+        rows = []
         for idx, session in enumerate(sorted_sessions, 1):
-            browser = ClaudeHistoryBrowser()
             date = browser.format_date(session.get('modified', session.get('created', '')))
             summary = session.get('summary', 'No summary')
-
-            # Add marker for unindexed (active/recent) sessions
-            if session.get('isUnindexed', False):
-                summary = "🔴 " + summary
-                max_len = 55  # Account for emoji
-            else:
-                max_len = 57
-
-            if len(summary) > max_len:
-                summary = summary[:max_len-3] + "..."
             msg_count = str(session.get('messageCount', 0))
-            branch = session.get('gitBranch', 'N/A')
-            if len(branch) > 51:
-                branch = branch[:48] + "..."
+            branch = session.get('gitBranch', '') or ''
+            project = session.get('projectPath', '') or ''
+            if project.startswith(home_dir):
+                project = "~" + project[len(home_dir):]
+            indexed = "✓" if not session.get('isUnindexed', False) else ""
+            rows.append({
+                'idx': str(idx),
+                'date': date,
+                'indexed': indexed,
+                'summary': summary,
+                'msg_count': msg_count,
+                'branch': branch,
+                'project': project,
+            })
 
-            table.add_row(str(idx), date, summary, msg_count, branch)
+        # Calculate dynamic widths with min/max bounds
+        def calc_width(key, min_w, max_w, header_len):
+            if not rows:
+                return min_w
+            max_content = max(len(r[key]) for r in rows)
+            return min(max_w, max(min_w, max_content, header_len))
+
+        idx_width = calc_width('idx', 2, 5, 1)
+        date_width = 16  # Fixed for date format
+        indexed_width = 3  # "IDX" header
+        summary_width = calc_width('summary', 30, 72, 7)  # 20% wider than before (60 -> 72)
+        msg_width = calc_width('msg_count', 4, 8, 4)
+        branch_width = calc_width('branch', 6, 40, 6)
+        project_width = calc_width('project', 10, 50, 7)
+
+        table = Table(title=title, box=box.ROUNDED, show_lines=False)
+
+        table.add_column("#", style="dim", width=idx_width, justify="left")
+        table.add_column("Date", style="cyan", width=date_width, justify="left")
+        table.add_column("IDX", style="green", width=indexed_width, justify="left")
+        table.add_column("Summary", style="bold", width=summary_width, justify="left")
+        table.add_column("Msgs", style="green", width=msg_width, justify="left")
+        table.add_column("Branch", style="yellow", width=branch_width, justify="left")
+        table.add_column("Project", style="magenta", width=project_width, justify="left")
+
+        for row in rows:
+            summary = row['summary']
+            if len(summary) > summary_width:
+                summary = summary[:summary_width-3] + "..."
+            branch = row['branch']
+            if len(branch) > branch_width:
+                branch = branch[:branch_width-3] + "..."
+            project = row['project']
+            if len(project) > project_width:
+                project = "..." + project[-(project_width-3):]  # Show end of path
+
+            table.add_row(
+                row['idx'],
+                row['date'],
+                row['indexed'],
+                summary,
+                row['msg_count'],
+                branch,
+                project
+            )
 
         console.print(table)
         console.print(f"\nTotal sessions: {len(sessions)}", style="bold")
@@ -286,16 +331,19 @@ class RichDisplay:
         # Show note about unindexed sessions
         unindexed_count = sum(1 for s in sessions if s.get('isUnindexed', False))
         if unindexed_count > 0:
-            console.print(f"🔴 = Active/recent session (not yet indexed): {unindexed_count}", style="dim")
+            console.print(f"IDX column: ✓ = indexed, blank = not yet indexed ({unindexed_count} unindexed)", style="dim")
 
     @staticmethod
-    def show_session_detail(session: Dict, messages: List[Dict], max_length: Optional[int] = 2000):
+    def show_session_detail(session: Dict, messages: List[Dict], max_length: Optional[int] = 2000,
+                           include_thinking: bool = False, include_empty: bool = False):
         """Display detailed view of a session.
 
         Args:
             session: Session metadata dictionary
             messages: List of message dictionaries
             max_length: Maximum message length before truncation. None for no limit, 0 for no truncation.
+            include_thinking: Whether to include thinking blocks
+            include_empty: Whether to include empty messages
         """
         console.print()
 
@@ -313,12 +361,20 @@ class RichDisplay:
         console.print(Panel(metadata, title="Session Details", border_style="blue"))
         console.print()
 
-        # Messages
-        for idx, msg in enumerate(messages, 1):
+        # Messages - skip empty ones by default
+        shown = 0
+        skipped = 0
+        for msg in messages:
             role = msg.get('message', {}).get('role', 'unknown')
             timestamp = browser.format_date(msg.get('timestamp', ''))
-            content = browser._extract_message_text(msg)
+            content = browser._extract_message_text(msg, include_thinking=include_thinking)
 
+            # Skip empty messages (tool calls, system messages, etc.) unless requested
+            if not content.strip() and not include_empty:
+                skipped += 1
+                continue
+
+            shown += 1
             if role == 'user':
                 style = "bold green"
                 emoji = "👤"
@@ -334,6 +390,9 @@ class RichDisplay:
 
             console.print(Panel(content, title=title, border_style=style))
             console.print()
+
+        if skipped > 0:
+            console.print(f"[dim]({skipped} empty messages skipped - tool calls, thinking, etc.)[/dim]")
 
     @staticmethod
     def show_search_results(results: List[Dict], query: str):
@@ -380,47 +439,85 @@ class BasicDisplay:
     @staticmethod
     def show_sessions_table(sessions: List[Dict], title: str = "Claude Code Sessions"):
         """Display sessions in basic table format."""
-        print(f"\n{title}")
-        print("=" * 150)
-        print(f"{'#':<4} {'Date':<16} {'Summary':<60} {'Msgs':<6} {'Branch':<54}")
-        print("-" * 150)
-
         sorted_sessions = sorted(sessions, key=lambda x: x.get('modified', ''), reverse=True)
         browser = ClaudeHistoryBrowser()
 
+        # Prepare data and calculate dynamic column widths
+        home_dir = os.path.expanduser("~")
+        rows = []
         for idx, session in enumerate(sorted_sessions, 1):
             date = browser.format_date(session.get('modified', session.get('created', '')))
             summary = session.get('summary', 'No summary')
+            msg_count = str(session.get('messageCount', 0))
+            branch = session.get('gitBranch', '') or ''
+            project = session.get('projectPath', '') or ''
+            if project.startswith(home_dir):
+                project = "~" + project[len(home_dir):]
+            indexed = "Y" if not session.get('isUnindexed', False) else ""
+            rows.append({
+                'idx': str(idx),
+                'date': date,
+                'indexed': indexed,
+                'summary': summary,
+                'msg_count': msg_count,
+                'branch': branch,
+                'project': project,
+            })
 
-            # Add marker for unindexed (active/recent) sessions
-            if session.get('isUnindexed', False):
-                summary = "* " + summary
-                max_len = 58
-            else:
-                max_len = 60
+        # Calculate dynamic widths
+        def calc_width(key, min_w, max_w, header_len):
+            if not rows:
+                return min_w
+            max_content = max(len(r[key]) for r in rows)
+            return min(max_w, max(min_w, max_content, header_len))
 
-            summary = summary[:max_len-3] if len(summary) > max_len else summary
-            msg_count = session.get('messageCount', 0)
-            branch = session.get('gitBranch', 'N/A')[:51]
+        idx_width = calc_width('idx', 2, 5, 1)
+        date_width = 16
+        indexed_width = 3
+        summary_width = calc_width('summary', 30, 72, 7)
+        msg_width = calc_width('msg_count', 4, 8, 4)
+        branch_width = calc_width('branch', 6, 40, 6)
+        project_width = calc_width('project', 10, 50, 7)
 
-            print(f"{idx:<4} {date:<16} {summary:<60} {msg_count:<6} {branch:<54}")
+        total_width = idx_width + date_width + indexed_width + summary_width + msg_width + branch_width + project_width + 12
+
+        print(f"\n{title}")
+        print("=" * total_width)
+        print(f"{'#':<{idx_width}} {'Date':<{date_width}} {'IDX':<{indexed_width}} {'Summary':<{summary_width}} {'Msgs':<{msg_width}} {'Branch':<{branch_width}} {'Project':<{project_width}}")
+        print("-" * total_width)
+
+        for row in rows:
+            summary = row['summary']
+            if len(summary) > summary_width:
+                summary = summary[:summary_width-3] + "..."
+            branch = row['branch']
+            if len(branch) > branch_width:
+                branch = branch[:branch_width-3] + "..."
+            project = row['project']
+            if len(project) > project_width:
+                project = "..." + project[-(project_width-3):]
+
+            print(f"{row['idx']:<{idx_width}} {row['date']:<{date_width}} {row['indexed']:<{indexed_width}} {summary:<{summary_width}} {row['msg_count']:<{msg_width}} {branch:<{branch_width}} {project:<{project_width}}")
 
         print(f"\nTotal sessions: {len(sessions)}")
 
         # Show note about unindexed sessions
         unindexed_count = sum(1 for s in sessions if s.get('isUnindexed', False))
         if unindexed_count > 0:
-            print(f"* = Active/recent session (not yet indexed): {unindexed_count}")
+            print(f"IDX column: Y = indexed, blank = not yet indexed ({unindexed_count} unindexed)")
         print()
 
     @staticmethod
-    def show_session_detail(session: Dict, messages: List[Dict], max_length: Optional[int] = 2000):
+    def show_session_detail(session: Dict, messages: List[Dict], max_length: Optional[int] = 2000,
+                           include_thinking: bool = False, include_empty: bool = False):
         """Display detailed view of a session.
 
         Args:
             session: Session metadata dictionary
             messages: List of message dictionaries
             max_length: Maximum message length before truncation. None for no limit, 0 for no truncation.
+            include_thinking: Whether to include thinking blocks
+            include_empty: Whether to include empty messages
         """
         browser = ClaudeHistoryBrowser()
 
@@ -434,10 +531,17 @@ class BasicDisplay:
         print("=" * 100)
         print()
 
-        for idx, msg in enumerate(messages, 1):
+        # Messages - skip empty ones by default
+        skipped = 0
+        for msg in messages:
             role = msg.get('message', {}).get('role', 'unknown')
             timestamp = browser.format_date(msg.get('timestamp', ''))
-            content = browser._extract_message_text(msg)
+            content = browser._extract_message_text(msg, include_thinking=include_thinking)
+
+            # Skip empty messages unless requested
+            if not content.strip() and not include_empty:
+                skipped += 1
+                continue
 
             print(f"\n{'─' * 100}")
             print(f"{role.upper()} - {timestamp}")
@@ -450,6 +554,9 @@ class BasicDisplay:
             else:
                 print(content)
             print()
+
+        if skipped > 0:
+            print(f"({skipped} empty messages skipped - tool calls, thinking, etc.)")
 
     @staticmethod
     def show_search_results(results: List[Dict], query: str):
@@ -484,6 +591,7 @@ def main():
 Examples:
   %(prog)s list                           # List all sessions
   %(prog)s list --limit 10                # Show 10 most recent sessions
+  %(prog)s list --project liquidity       # Filter by project path
   %(prog)s search "test infra"            # Search in summaries/prompts
   %(prog)s grep "CompilerConfig"          # Search in all message content
   %(prog)s view 5                         # View session #5 from list
@@ -505,12 +613,18 @@ Examples:
                        help='Case sensitive search (for grep)')
     parser.add_argument('--branch',
                        help='Filter by git branch')
+    parser.add_argument('--project',
+                       help='Filter by project path (substring match)')
     parser.add_argument('--since',
                        help='Filter sessions since date (YYYY-MM-DD)')
     parser.add_argument('--until',
                        help='Filter sessions until date (YYYY-MM-DD)')
     parser.add_argument('--max-message-length', type=int, default=2000,
                        help='Maximum message length before truncation (default: 2000). Use 0 for no truncation.')
+    parser.add_argument('--include-thinking', action='store_true',
+                       help='Include thinking blocks in view output (excluded by default)')
+    parser.add_argument('--include-empty', action='store_true',
+                       help='Include empty messages (tool calls, etc.) in view output')
 
     args = parser.parse_args()
 
@@ -523,6 +637,9 @@ Examples:
         # Apply filters
         if args.branch:
             sessions = [s for s in sessions if args.branch in s.get('gitBranch', '')]
+
+        if args.project:
+            sessions = [s for s in sessions if args.project.lower() in s.get('projectPath', '').lower()]
 
         if args.since:
             since_date = datetime.fromisoformat(args.since)
@@ -590,7 +707,9 @@ Examples:
         messages = browser.load_session_messages(Path(session['fullPath']))
         # Convert max_length: 0 means no truncation (None), otherwise use the value
         max_length = None if args.max_message_length == 0 else args.max_message_length
-        display.show_session_detail(session, messages, max_length)
+        display.show_session_detail(session, messages, max_length,
+                                   include_thinking=args.include_thinking,
+                                   include_empty=args.include_empty)
 
     elif args.command == 'stats':
         sessions = browser.get_all_sessions()
