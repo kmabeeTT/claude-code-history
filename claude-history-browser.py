@@ -186,6 +186,32 @@ class ClaudeHistoryBrowser:
 
         return results
 
+    def _is_system_noise(self, text: str) -> bool:
+        """Check if text is system noise that should be filtered out."""
+        if not text:
+            return True
+        text_stripped = text.strip()
+        # Filter out command/system messages
+        noise_patterns = [
+            '<local-command-caveat>',
+            '<command-name>',
+            '<local-command-stdout>',
+            '<command-args>',
+            '</local-command-caveat>',
+            '</command-name>',
+            '</local-command-stdout>',
+            '</command-args>',
+            '[Request interrupted by user',
+            'No response requested.',
+        ]
+        for pattern in noise_patterns:
+            if pattern in text_stripped:
+                return True
+        # Filter messages that are just XML tags
+        if text_stripped.startswith('<') and text_stripped.endswith('>'):
+            return True
+        return False
+
     def _extract_message_text(self, msg: Dict, include_thinking: bool = False) -> str:
         """Extract text content from a message.
 
@@ -361,7 +387,7 @@ class RichDisplay:
         console.print(Panel(metadata, title="Session Details", border_style="blue"))
         console.print()
 
-        # Messages - skip empty ones by default
+        # Messages - skip empty and system noise by default
         shown = 0
         skipped = 0
         for msg in messages:
@@ -369,10 +395,11 @@ class RichDisplay:
             timestamp = browser.format_date(msg.get('timestamp', ''))
             content = browser._extract_message_text(msg, include_thinking=include_thinking)
 
-            # Skip empty messages (tool calls, system messages, etc.) unless requested
-            if not content.strip() and not include_empty:
-                skipped += 1
-                continue
+            # Skip empty messages and system noise unless requested
+            if not include_empty:
+                if not content.strip() or browser._is_system_noise(content):
+                    skipped += 1
+                    continue
 
             shown += 1
             if role == 'user':
@@ -538,10 +565,11 @@ class BasicDisplay:
             timestamp = browser.format_date(msg.get('timestamp', ''))
             content = browser._extract_message_text(msg, include_thinking=include_thinking)
 
-            # Skip empty messages unless requested
-            if not content.strip() and not include_empty:
-                skipped += 1
-                continue
+            # Skip empty messages and system noise unless requested
+            if not include_empty:
+                if not content.strip() or browser._is_system_noise(content):
+                    skipped += 1
+                    continue
 
             print(f"\n{'─' * 100}")
             print(f"{role.upper()} - {timestamp}")
