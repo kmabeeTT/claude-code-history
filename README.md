@@ -220,13 +220,23 @@ Make the script executable: `chmod +x claude-history-browser.py`
 
 ## Future Enhancements
 
-Potential additions:
-- Interactive mode with arrow key navigation
-- Export conversations to Markdown/HTML
-- Filter by message count range
-- Search with regex patterns
-- Tag/favorite system
-- Delete old conversations
+### High Value
+- **Export to Markdown** - `view 3 --export md` to save a conversation for sharing or archiving
+- **JSON output mode** - `list --json` for scripting/piping to `jq`
+- **Show files mentioned** - Extract file paths discussed in a session (useful for "what did I work on?")
+- **Better stats** - Activity by day/week, most active projects, average session length
+
+### Medium Value
+- **Regex search** - `grep --regex "def \w+\("` for pattern matching
+- **Message count filter** - `list --min-messages 50` to find substantial conversations
+- **Delete/archive old sessions** - Cleanup utility with confirmation
+- **Diff sessions** - Compare two related sessions to see what changed
+
+### Nice to Have
+- **Interactive TUI mode** - Arrow key navigation through sessions (using `textual` or similar)
+- **Copy session ID to clipboard** - Quick `view 3 --copy-id`
+- **Continuation chain** - Show which sessions were continued from others (detect "This session is being continued")
+- **Timeline/calendar view** - Visual activity heatmap
 
 ## Contributing
 
