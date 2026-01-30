@@ -419,7 +419,9 @@ class RichDisplay:
 
             # Render markdown (tables, code blocks, etc.) for prettier output
             try:
-                rendered_content = Markdown(content)
+                # Convert inline code backticks to bold (avoids ugly dark background)
+                content_processed = re.sub(r'`([^`\n]+)`', r'**\1**', content)
+                rendered_content = Markdown(content_processed)
             except Exception:
                 rendered_content = content
 
