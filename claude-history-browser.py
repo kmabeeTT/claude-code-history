@@ -22,6 +22,7 @@ try:
     from rich import box
     from rich.layout import Layout
     from rich.text import Text
+    from rich.theme import Theme
     HAS_RICH = True
 except ImportError:
     HAS_RICH = False
@@ -38,12 +39,17 @@ def init_console(color_mode: str = 'always'):
         console = None
         return
 
+    # Custom theme: style inline code as bright blue without dark background
+    custom_theme = Theme({
+        "markdown.code": "bright_blue",
+    })
+
     if color_mode == 'always':
-        console = Console(force_terminal=True)
+        console = Console(force_terminal=True, theme=custom_theme)
     elif color_mode == 'never':
-        console = Console(force_terminal=False, no_color=True)
+        console = Console(force_terminal=False, no_color=True, theme=custom_theme)
     else:  # auto
-        console = Console()
+        console = Console(theme=custom_theme)
 
 
 class ClaudeHistoryBrowser:
@@ -557,8 +563,7 @@ class RichDisplay:
 
             # Render markdown (tables, code blocks, etc.) for prettier output
             try:
-                content_processed = re.sub(r'`([^`\n]+)`', r'**\1**', content)
-                rendered_content = Markdown(content_processed)
+                rendered_content = Markdown(content)
             except Exception:
                 rendered_content = content
 
