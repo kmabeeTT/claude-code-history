@@ -412,10 +412,20 @@ class RichDisplay:
             title = f"{emoji} {role.upper()} - {timestamp}"
 
             # Truncate very long messages if max_length is set
+            truncated = False
             if max_length is not None and max_length > 0 and len(content) > max_length:
-                content = content[:max_length] + f"\n\n... [dim](message truncated, {len(content)} total chars)[/dim]"
+                content = content[:max_length]
+                truncated = True
 
-            console.print(Panel(content, title=title, border_style=style))
+            # Render markdown (tables, code blocks, etc.) for prettier output
+            try:
+                rendered_content = Markdown(content)
+            except Exception:
+                rendered_content = content
+
+            console.print(Panel(rendered_content, title=title, border_style=style))
+            if truncated:
+                console.print(f"[dim]  ... (message truncated, showing {max_length} of {len(content) + max_length} chars)[/dim]")
             console.print()
 
         if skipped > 0:
