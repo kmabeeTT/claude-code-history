@@ -212,6 +212,64 @@ class ClaudeHistoryBrowser:
             return True
         return False
 
+    def _is_transitional_message(self, text: str, max_chars: int = 250) -> bool:
+        """Check if text is a short transitional/narration message.
+
+        These are brief messages where Claude explains what it's about to do,
+        like "Let me read the file" or "Now I'll add the function".
+        """
+        if not text or len(text) > max_chars:
+            return False
+
+        text_lower = text.lower().strip()
+
+        # Phrases that indicate transitional narration (can appear anywhere in short messages)
+        transitional_phrases = [
+            "let me ",
+            "let's ",
+            "i'll ",
+            "i will ",
+            "i need to ",
+            "i should ",
+            "i'm going to ",
+        ]
+
+        # Check if any transitional phrase appears in the message
+        has_transitional_phrase = any(phrase in text_lower for phrase in transitional_phrases)
+
+        if not has_transitional_phrase:
+            return False
+
+        # Additional patterns that often prefix transitional messages
+        prefix_patterns = [
+            "now ",
+            "first, ",
+            "next, ",
+            "excellent!",
+            "great!",
+            "perfect!",
+            "good!",
+            "ok,",
+            "okay,",
+            "alright,",
+            "i see",
+            "the ",  # "The test is working. Let me..."
+        ]
+
+        # If message starts with a transitional phrase, it's definitely transitional
+        if any(text_lower.startswith(phrase) for phrase in transitional_phrases):
+            return True
+
+        # If message starts with a prefix and contains transitional phrase, it's transitional
+        if any(text_lower.startswith(prefix) for prefix in prefix_patterns):
+            return True
+
+        # Short message with transitional phrase is likely transitional
+        if len(text) < 150:
+            return True
+
+        return False
+
     def _extract_message_text(self, msg: Dict, include_thinking: bool = False) -> str:
         """Extract text content from a message.
 
@@ -387,9 +445,8 @@ class RichDisplay:
         console.print(Panel(metadata, title="Session Details", border_style="blue"))
         console.print()
 
-        # Messages - skip empty and system noise by default
-        shown = 0
-        skipped = 0
+        # Pre-process messages: extract content and classify
+        processed_msgs = []
         for msg in messages:
             role = msg.get('message', {}).get('role', 'unknown')
             timestamp = browser.format_date(msg.get('timestamp', ''))
@@ -398,10 +455,44 @@ class RichDisplay:
             # Skip empty messages and system noise unless requested
             if not include_empty:
                 if not content.strip() or browser._is_system_noise(content):
-                    skipped += 1
                     continue
 
-            shown += 1
+            is_transitional = (role == 'assistant' and
+                              browser._is_transitional_message(content))
+
+            processed_msgs.append({
+                'role': role,
+                'timestamp': timestamp,
+                'content': content,
+                'is_transitional': is_transitional,
+            })
+
+        # Display messages, grouping consecutive transitional ones
+        skipped = len(messages) - len(processed_msgs)
+        transitional_group = []
+        grouped_count = 0
+
+        def flush_transitional_group():
+            nonlocal grouped_count
+            if len(transitional_group) > 1:
+                # Show grouped transitional messages as collapsed
+                console.print(Panel(
+                    f"[dim]{len(transitional_group)} transitional messages:[/dim]\n" +
+                    "\n".join(f"[dim]• {m['content'][:80]}{'...' if len(m['content']) > 80 else ''}[/dim]"
+                              for m in transitional_group),
+                    title="🤖 ASSISTANT - working...",
+                    border_style="dim blue"
+                ))
+                console.print()
+                grouped_count += len(transitional_group)
+            elif len(transitional_group) == 1:
+                # Single transitional message - show normally
+                show_message(transitional_group[0])
+            transitional_group.clear()
+
+        def show_message(pm):
+            role, timestamp, content = pm['role'], pm['timestamp'], pm['content']
+
             if role == 'user':
                 style = "bold green"
                 emoji = "👤"
@@ -413,13 +504,13 @@ class RichDisplay:
 
             # Truncate very long messages if max_length is set
             truncated = False
+            original_len = len(content)
             if max_length is not None and max_length > 0 and len(content) > max_length:
                 content = content[:max_length]
                 truncated = True
 
             # Render markdown (tables, code blocks, etc.) for prettier output
             try:
-                # Convert inline code backticks to bold (avoids ugly dark background)
                 content_processed = re.sub(r'`([^`\n]+)`', r'**\1**', content)
                 rendered_content = Markdown(content_processed)
             except Exception:
@@ -427,11 +518,26 @@ class RichDisplay:
 
             console.print(Panel(rendered_content, title=title, border_style=style))
             if truncated:
-                console.print(f"[dim]  ... (message truncated, showing {max_length} of {len(content) + max_length} chars)[/dim]")
+                console.print(f"[dim]  ... (message truncated, showing {max_length} of {original_len} chars)[/dim]")
             console.print()
 
+        for pm in processed_msgs:
+            if pm['is_transitional']:
+                transitional_group.append(pm)
+            else:
+                flush_transitional_group()
+                show_message(pm)
+
+        flush_transitional_group()  # Flush any remaining
+
+        # Summary
+        summary_parts = []
         if skipped > 0:
-            console.print(f"[dim]({skipped} empty messages skipped - tool calls, thinking, etc.)[/dim]")
+            summary_parts.append(f"{skipped} empty/noise")
+        if grouped_count > 0:
+            summary_parts.append(f"{grouped_count} transitional grouped")
+        if summary_parts:
+            console.print(f"[dim]({', '.join(summary_parts)})[/dim]")
 
     @staticmethod
     def show_search_results(results: List[Dict], query: str):
@@ -570,24 +676,51 @@ class BasicDisplay:
         print("=" * 100)
         print()
 
-        # Messages - skip empty ones by default
-        skipped = 0
+        # Pre-process messages
+        processed_msgs = []
         for msg in messages:
             role = msg.get('message', {}).get('role', 'unknown')
             timestamp = browser.format_date(msg.get('timestamp', ''))
             content = browser._extract_message_text(msg, include_thinking=include_thinking)
 
-            # Skip empty messages and system noise unless requested
             if not include_empty:
                 if not content.strip() or browser._is_system_noise(content):
-                    skipped += 1
                     continue
 
+            is_transitional = (role == 'assistant' and
+                              browser._is_transitional_message(content))
+            processed_msgs.append({
+                'role': role,
+                'timestamp': timestamp,
+                'content': content,
+                'is_transitional': is_transitional,
+            })
+
+        skipped = len(messages) - len(processed_msgs)
+        transitional_group = []
+        grouped_count = 0
+
+        def flush_transitional_group():
+            nonlocal grouped_count
+            if len(transitional_group) > 1:
+                print(f"\n{'─' * 100}")
+                print(f"ASSISTANT - working... ({len(transitional_group)} transitional messages)")
+                print(f"{'─' * 100}")
+                for m in transitional_group:
+                    preview = m['content'][:80] + '...' if len(m['content']) > 80 else m['content']
+                    print(f"  • {preview}")
+                print()
+                grouped_count += len(transitional_group)
+            elif len(transitional_group) == 1:
+                show_message(transitional_group[0])
+            transitional_group.clear()
+
+        def show_message(pm):
             print(f"\n{'─' * 100}")
-            print(f"{role.upper()} - {timestamp}")
+            print(f"{pm['role'].upper()} - {pm['timestamp']}")
             print(f"{'─' * 100}")
 
-            # Truncate if max_length is set
+            content = pm['content']
             if max_length is not None and max_length > 0 and len(content) > max_length:
                 print(content[:max_length])
                 print(f"\n... (message truncated, {len(content)} total chars)")
@@ -595,8 +728,23 @@ class BasicDisplay:
                 print(content)
             print()
 
+        for pm in processed_msgs:
+            if pm['is_transitional']:
+                transitional_group.append(pm)
+            else:
+                flush_transitional_group()
+                show_message(pm)
+
+        flush_transitional_group()
+
+        # Summary
+        summary_parts = []
         if skipped > 0:
-            print(f"({skipped} empty messages skipped - tool calls, thinking, etc.)")
+            summary_parts.append(f"{skipped} empty/noise")
+        if grouped_count > 0:
+            summary_parts.append(f"{grouped_count} transitional grouped")
+        if summary_parts:
+            print(f"({', '.join(summary_parts)})")
 
     @staticmethod
     def show_search_results(results: List[Dict], query: str):
