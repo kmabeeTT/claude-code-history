@@ -223,6 +223,33 @@ class ClaudeHistoryBrowser:
 
         text_lower = text.lower().strip()
 
+        # Direct transitional starters - these are always transitional regardless of content
+        direct_transitional_starts = [
+            "now update ",
+            "now add ",
+            "now create ",
+            "now run ",
+            "now check ",
+            "now test ",
+            "now fix ",
+            "now modify ",
+            "now read ",
+            "now look ",
+            "now find ",
+            "now search ",
+            "now implement ",
+            "now write ",
+            "now remove ",
+            "now delete ",
+            "now change ",
+            "now replace ",
+            "now refactor ",
+            "now enhance ",
+        ]
+
+        if any(text_lower.startswith(start) for start in direct_transitional_starts):
+            return True
+
         # Phrases that indicate transitional narration (can appear anywhere in short messages)
         transitional_phrases = [
             "let me ",
