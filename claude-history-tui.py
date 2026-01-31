@@ -169,6 +169,57 @@ class ClaudeHistoryBrowser:
             return True
         return False
 
+    def _is_transitional_message(self, text: str, max_chars: int = 250) -> bool:
+        """Check if text is a short transitional/narration message.
+
+        These are brief messages where Claude explains what it's about to do,
+        like "Let me read the file" or "Now I'll add the function".
+        """
+        if not text or len(text) > max_chars:
+            return False
+
+        text_lower = text.lower().strip()
+
+        # Direct transitional starters
+        direct_transitional_starts = [
+            "now update ", "now add ", "now create ", "now run ",
+            "now check ", "now test ", "now fix ", "now modify ",
+            "now read ", "now look ", "now find ", "now search ",
+            "now implement ", "now write ", "now remove ", "now delete ",
+            "now change ", "now replace ", "now refactor ", "now enhance ",
+        ]
+
+        if any(text_lower.startswith(start) for start in direct_transitional_starts):
+            return True
+
+        # Phrases that indicate transitional narration
+        transitional_phrases = [
+            "let me ", "let's ", "i'll ", "i will ",
+            "i need to ", "i should ", "i'm going to ",
+        ]
+
+        has_transitional_phrase = any(phrase in text_lower for phrase in transitional_phrases)
+
+        if not has_transitional_phrase:
+            return False
+
+        # Additional patterns that often prefix transitional messages
+        prefix_patterns = [
+            "now ", "first, ", "next, ", "excellent!", "great!",
+            "perfect!", "good!", "ok,", "okay,", "alright,", "i see", "the ",
+        ]
+
+        if any(text_lower.startswith(phrase) for phrase in transitional_phrases):
+            return True
+
+        if any(text_lower.startswith(prefix) for prefix in prefix_patterns):
+            return True
+
+        if len(text) < 200:
+            return True
+
+        return False
+
     def get_all_sessions(self) -> List[Dict]:
         """Get all sessions from all projects, including unindexed ones."""
         all_sessions = []
@@ -373,6 +424,7 @@ Press [bold]y[/bold] to confirm deletion or [bold]n[/bold]/[bold]Escape[/bold] t
 class SessionViewerScreen(Screen):
     """Full screen view of a session's conversation."""
 
+    # Don't inherit app bindings (like delete) - only show viewer-specific bindings
     BINDINGS = [
         Binding("escape", "go_back", "Back"),
         Binding("q", "go_back", "Back"),
@@ -381,6 +433,10 @@ class SessionViewerScreen(Screen):
         Binding("g", "scroll_top", "Top", show=False),
         Binding("G", "scroll_bottom", "Bottom", show=False),
     ]
+
+    # Prevent inheriting parent app bindings in footer
+    ALLOW_IN_MAXIMIZED_VIEW = True
+    inherit_bindings = False
 
     # Custom theme for markdown rendering (bright blue inline code)
     CUSTOM_THEME = Theme({
@@ -428,6 +484,77 @@ class SessionViewerScreen(Screen):
                     lines.append(text)
         return lines
 
+    def write_message(self, log: RichLog, role: str, timestamp: str, content: str, browser: ClaudeHistoryBrowser):
+        """Write a single message to the log with border formatting."""
+        if role == "user":
+            style = "bold green"
+            emoji = "👤"
+        else:
+            style = "bold blue"
+            emoji = "🤖"
+
+        log.write("")
+
+        # Write header with border
+        header = Text()
+        header.append("▌ ", style=style)
+        header.append(f"{emoji} {role.upper()} - {timestamp}", style=style)
+        log.write(header)
+
+        # Empty border line
+        empty_border = Text()
+        empty_border.append("▌", style=style)
+        log.write(empty_border)
+
+        # Truncate very long messages
+        truncated = False
+        if len(content) > 4000:
+            content = content[:4000]
+            truncated = True
+
+        # Render markdown content with border
+        for line in self.render_markdown_with_border(content, style):
+            log.write(line)
+
+        if truncated:
+            trunc_text = Text()
+            trunc_text.append("▌ ", style=style)
+            trunc_text.append("... (message truncated)", style="dim")
+            log.write(trunc_text)
+
+    def write_transitional_group(self, log: RichLog, group: List[Dict]):
+        """Write a group of transitional messages in collapsed form."""
+        style = "bold blue"
+
+        log.write("")
+
+        # Header
+        header = Text()
+        header.append("▌ ", style=style)
+        header.append("🤖 ASSISTANT - working...", style=style)
+        log.write(header)
+
+        # Empty border line
+        empty_border = Text()
+        empty_border.append("▌", style=style)
+        log.write(empty_border)
+
+        # Count line
+        count_line = Text()
+        count_line.append("▌ ", style=style)
+        count_line.append(f"{len(group)} transitional messages:", style="dim")
+        log.write(count_line)
+
+        # Show preview of each message
+        for m in group:
+            preview = m['content'][:150]
+            if len(m['content']) > 150:
+                preview += "..."
+            preview_line = Text()
+            preview_line.append("▌ ", style=style)
+            preview_line.append(f"• {preview}", style="dim")
+            log.write(preview_line)
+
     def on_mount(self):
         browser = ClaudeHistoryBrowser()
         log = self.query_one("#conversation", RichLog)
@@ -444,54 +571,72 @@ class SessionViewerScreen(Screen):
         header_text.append("─" * 80)
         log.write(header_text)
 
-        # Load and display messages
+        # Load and pre-process messages
         session_file = Path(self.session.get("fullPath", ""))
         messages = browser.load_session_messages(session_file)
 
+        # Pre-process: extract content, classify as transitional or not
+        processed_msgs = []
+        skipped = 0
         for msg in messages:
             role = msg.get("message", {}).get("role", "unknown")
             timestamp = browser.format_date(msg.get("timestamp", ""))
             content = browser._extract_message_text(msg)
 
             if not content.strip() or browser._is_system_noise(content):
+                skipped += 1
                 continue
 
-            log.write("")
+            is_transitional = (
+                role == "assistant" and browser._is_transitional_message(content)
+            )
 
-            # Determine style based on role
-            if role == "user":
-                style = "bold green"
-                emoji = "👤"
+            processed_msgs.append({
+                'role': role,
+                'timestamp': timestamp,
+                'content': content,
+                'is_transitional': is_transitional,
+            })
+
+        # Display messages, grouping consecutive transitional ones
+        transitional_group = []
+        grouped_count = 0
+
+        for pm in processed_msgs:
+            if pm['is_transitional']:
+                transitional_group.append(pm)
             else:
-                style = "bold blue"
-                emoji = "🤖"
+                # Flush any pending transitional group
+                if len(transitional_group) > 1:
+                    self.write_transitional_group(log, transitional_group)
+                    grouped_count += len(transitional_group)
+                elif len(transitional_group) == 1:
+                    m = transitional_group[0]
+                    self.write_message(log, m['role'], m['timestamp'], m['content'], browser)
+                transitional_group = []
 
-            # Write header with border
-            header = Text()
-            header.append("▌ ", style=style)
-            header.append(f"{emoji} {role.upper()} - {timestamp}", style=style)
-            log.write(header)
+                # Write the current non-transitional message
+                self.write_message(log, pm['role'], pm['timestamp'], pm['content'], browser)
 
-            # Empty border line
-            empty_border = Text()
-            empty_border.append("▌", style=style)
-            log.write(empty_border)
+        # Flush remaining transitional group
+        if len(transitional_group) > 1:
+            self.write_transitional_group(log, transitional_group)
+            grouped_count += len(transitional_group)
+        elif len(transitional_group) == 1:
+            m = transitional_group[0]
+            self.write_message(log, m['role'], m['timestamp'], m['content'], browser)
 
-            # Truncate very long messages
-            truncated = False
-            if len(content) > 4000:
-                content = content[:4000]
-                truncated = True
-
-            # Render markdown content with border
-            for line in self.render_markdown_with_border(content, style):
-                log.write(line)
-
-            if truncated:
-                trunc_text = Text()
-                trunc_text.append("▌ ", style=style)
-                trunc_text.append("... (message truncated)", style="dim")
-                log.write(trunc_text)
+        # Summary
+        if skipped > 0 or grouped_count > 0:
+            summary_parts = []
+            if skipped > 0:
+                summary_parts.append(f"{skipped} empty/noise")
+            if grouped_count > 0:
+                summary_parts.append(f"{grouped_count} transitional grouped")
+            log.write("")
+            summary_text = Text()
+            summary_text.append(f"({', '.join(summary_parts)})", style="dim")
+            log.write(summary_text)
 
     def action_go_back(self):
         self.app.pop_screen()
