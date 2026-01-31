@@ -424,19 +424,26 @@ Press [bold]y[/bold] to confirm deletion or [bold]n[/bold]/[bold]Escape[/bold] t
 class SessionViewerScreen(Screen):
     """Full screen view of a session's conversation."""
 
-    # Don't inherit app bindings (like delete) - only show viewer-specific bindings
+    # Viewer-specific bindings + shadow app bindings to hide them from footer
     BINDINGS = [
         Binding("escape", "go_back", "Back"),
         Binding("q", "go_back", "Back"),
-        Binding("j", "scroll_down", "Scroll Down", show=False),
-        Binding("k", "scroll_up", "Scroll Up", show=False),
+        Binding("j", "scroll_down", "Down", show=False),
+        Binding("k", "scroll_up", "Up", show=False),
         Binding("g", "scroll_top", "Top", show=False),
         Binding("G", "scroll_bottom", "Bottom", show=False),
+        Binding("ctrl+a", "scroll_top", "Home"),
+        Binding("ctrl+e", "scroll_bottom", "End"),
+        Binding("page_up", "page_up", "PgUp", show=False),
+        Binding("page_down", "page_down", "PgDn", show=False),
+        # Shadow app bindings to hide them from footer
+        Binding("d", "noop", "Delete", show=False),
+        Binding("/", "noop", "Search", show=False),
+        Binding("p", "noop", "Project", show=False),
+        Binding("r", "noop", "Refresh", show=False),
+        Binding("enter", "noop", "View", show=False),
     ]
 
-    # Prevent inheriting parent app bindings in footer
-    ALLOW_IN_MAXIMIZED_VIEW = True
-    inherit_bindings = False
 
     # Custom theme for markdown rendering (bright blue inline code)
     CUSTOM_THEME = Theme({
@@ -641,6 +648,10 @@ class SessionViewerScreen(Screen):
     def action_go_back(self):
         self.app.pop_screen()
 
+    def action_noop(self):
+        """Do nothing - used to shadow app bindings."""
+        pass
+
     def action_scroll_down(self):
         log = self.query_one("#conversation", RichLog)
         log.scroll_down()
@@ -651,11 +662,19 @@ class SessionViewerScreen(Screen):
 
     def action_scroll_top(self):
         log = self.query_one("#conversation", RichLog)
-        log.scroll_home()
+        log.scroll_home(duration=0.15)
 
     def action_scroll_bottom(self):
         log = self.query_one("#conversation", RichLog)
-        log.scroll_end()
+        log.scroll_end(duration=0.15)
+
+    def action_page_up(self):
+        log = self.query_one("#conversation", RichLog)
+        log.scroll_page_up(duration=0.1)
+
+    def action_page_down(self):
+        log = self.query_one("#conversation", RichLog)
+        log.scroll_page_down(duration=0.1)
 
 
 class SearchInput(Input):
