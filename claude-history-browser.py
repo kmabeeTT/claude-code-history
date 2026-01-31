@@ -7,7 +7,9 @@ A beautiful text-based tool to browse and search Claude Code chat histories.
 import json
 import os
 import re
+import textwrap
 from datetime import datetime
+from io import StringIO
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import argparse
@@ -31,6 +33,12 @@ except ImportError:
 
 console = None  # Initialized after argument parsing
 
+# Custom theme: style inline code as bright blue without dark background
+# Defined at module level so it can be reused by temp consoles in border mode
+custom_theme = Theme({
+    "markdown.code": "bright_blue",
+}) if HAS_RICH else None
+
 
 def init_console(color_mode: str = 'always'):
     """Initialize the rich console with the specified color mode."""
@@ -38,11 +46,6 @@ def init_console(color_mode: str = 'always'):
     if not HAS_RICH:
         console = None
         return
-
-    # Custom theme: style inline code as bright blue without dark background
-    custom_theme = Theme({
-        "markdown.code": "bright_blue",
-    })
 
     if color_mode == 'always':
         console = Console(force_terminal=True, theme=custom_theme)
@@ -467,7 +470,8 @@ class RichDisplay:
 
     @staticmethod
     def show_session_detail(session: Dict, messages: List[Dict], max_length: Optional[int] = 2000,
-                           include_thinking: bool = False, include_empty: bool = False):
+                           include_thinking: bool = False, include_empty: bool = False,
+                           format_style: str = 'box'):
         """Display detailed view of a session.
 
         Args:
@@ -476,6 +480,7 @@ class RichDisplay:
             max_length: Maximum message length before truncation. None for no limit, 0 for no truncation.
             include_thinking: Whether to include thinking blocks
             include_empty: Whether to include empty messages
+            format_style: Display format - 'box' (default), 'simple', or 'border'
         """
         console.print()
 
@@ -520,17 +525,33 @@ class RichDisplay:
         transitional_group = []
         grouped_count = 0
 
+        # Get terminal width for horizontal rules
+        term_width = console.width or 80
+
         def flush_transitional_group():
             nonlocal grouped_count
             if len(transitional_group) > 1:
                 # Show grouped transitional messages as collapsed
-                console.print(Panel(
-                    f"[dim]{len(transitional_group)} transitional messages:[/dim]\n" +
-                    "\n".join(f"[dim]• {m['content'][:150]}{'...' if len(m['content']) > 150 else ''}[/dim]"
-                              for m in transitional_group),
-                    title="🤖 ASSISTANT - working...",
-                    border_style="dim blue"
-                ))
+                if format_style == 'box':
+                    console.print(Panel(
+                        f"[dim]{len(transitional_group)} transitional messages:[/dim]\n" +
+                        "\n".join(f"[dim]• {m['content'][:150]}{'...' if len(m['content']) > 150 else ''}[/dim]"
+                                  for m in transitional_group),
+                        title="🤖 ASSISTANT - working...",
+                        border_style="dim blue"
+                    ))
+                elif format_style == 'simple':
+                    console.print(f"[bold blue]🤖 ASSISTANT - working...[/bold blue]")
+                    console.print("[bold blue]" + "─" * min(term_width, 100) + "[/bold blue]")
+                    console.print(f"[dim]{len(transitional_group)} transitional messages:[/dim]")
+                    for m in transitional_group:
+                        console.print(f"[dim]• {m['content'][:150]}{'...' if len(m['content']) > 150 else ''}[/dim]")
+                elif format_style == 'border':
+                    console.print(f"[bold blue]▌[/bold blue] [bold blue]🤖 ASSISTANT - working...[/bold blue]")
+                    console.print(f"[bold blue]▌[/bold blue]")
+                    console.print(f"[bold blue]▌[/bold blue] [dim]{len(transitional_group)} transitional messages:[/dim]")
+                    for m in transitional_group:
+                        console.print(f"[bold blue]▌[/bold blue] [dim]• {m['content'][:150]}{'...' if len(m['content']) > 150 else ''}[/dim]")
                 console.print()
                 grouped_count += len(transitional_group)
             elif len(transitional_group) == 1:
@@ -561,15 +582,59 @@ class RichDisplay:
                 content = content[:effective_max]
                 truncated = True
 
-            # Render markdown (tables, code blocks, etc.) for prettier output
-            try:
-                rendered_content = Markdown(content)
-            except Exception:
-                rendered_content = content
+            if format_style == 'box':
+                # Render markdown (tables, code blocks, etc.) for prettier output
+                try:
+                    rendered_content = Markdown(content)
+                except Exception:
+                    rendered_content = content
+                console.print(Panel(rendered_content, title=title, border_style=style))
+                if truncated:
+                    console.print(f"[dim]  ... (message truncated, showing {effective_max} of {original_len} chars)[/dim]")
 
-            console.print(Panel(rendered_content, title=title, border_style=style))
-            if truncated:
-                console.print(f"[dim]  ... (message truncated, showing {effective_max} of {original_len} chars)[/dim]")
+            elif format_style == 'simple':
+                console.print(f"[{style}]{title}[/{style}]")
+                console.print(f"[{style}]" + "─" * min(term_width, 100) + f"[/{style}]")
+                # Render markdown
+                try:
+                    rendered_content = Markdown(content)
+                    console.print(rendered_content)
+                except Exception:
+                    console.print(content)
+                if truncated:
+                    console.print(f"[dim]... (message truncated, showing {effective_max} of {original_len} chars)[/dim]")
+
+            elif format_style == 'border':
+                console.print(f"[{style}]▌[/{style}] [{style}]{title}[/{style}]")
+                console.print(f"[{style}]▌[/{style}]")
+                # Render markdown first, then add borders to each line
+                border_width = max(40, term_width - 3)  # "▌ " takes ~2-3 chars
+                border_char = f"[{style}]▌[/{style}] "
+                try:
+                    # Create a temporary console to capture markdown rendering
+                    # Use custom_theme for consistent inline code styling (bright_blue)
+                    string_io = StringIO()
+                    temp_console = Console(file=string_io, force_terminal=True, width=border_width, theme=custom_theme)
+                    temp_console.print(Markdown(content))
+                    rendered = string_io.getvalue()
+                    # Add border to each line of rendered output
+                    # Print as raw text to preserve ANSI codes from markdown rendering
+                    for line in rendered.rstrip('\n').split('\n'):
+                        # Print border with markup, then line as raw (no markup processing)
+                        console.print(border_char, end="")
+                        print(line)  # Use plain print to avoid double-processing ANSI codes
+                except Exception:
+                    # Fallback to plain text with wrapping
+                    for line in content.split('\n'):
+                        if len(line) <= border_width:
+                            console.print(f"[{style}]▌[/{style}] {line}")
+                        else:
+                            wrapped = textwrap.wrap(line, width=border_width, break_long_words=False, break_on_hyphens=False)
+                            for wrapped_line in wrapped:
+                                console.print(f"[{style}]▌[/{style}] {wrapped_line}")
+                if truncated:
+                    console.print(f"[{style}]▌[/{style}] [dim]... (message truncated, showing {effective_max} of {original_len} chars)[/dim]")
+
             console.print()
 
         for pm in processed_msgs:
@@ -705,7 +770,8 @@ class BasicDisplay:
 
     @staticmethod
     def show_session_detail(session: Dict, messages: List[Dict], max_length: Optional[int] = 2000,
-                           include_thinking: bool = False, include_empty: bool = False):
+                           include_thinking: bool = False, include_empty: bool = False,
+                           format_style: str = 'box'):
         """Display detailed view of a session.
 
         Args:
@@ -714,6 +780,7 @@ class BasicDisplay:
             max_length: Maximum message length before truncation. None for no limit, 0 for no truncation.
             include_thinking: Whether to include thinking blocks
             include_empty: Whether to include empty messages
+            format_style: Display format - 'box', 'simple', or 'border' (all render similarly in basic mode)
         """
         browser = ClaudeHistoryBrowser()
 
@@ -754,12 +821,20 @@ class BasicDisplay:
         def flush_transitional_group():
             nonlocal grouped_count
             if len(transitional_group) > 1:
-                print(f"\n{'─' * 100}")
-                print(f"ASSISTANT - working... ({len(transitional_group)} transitional messages)")
-                print(f"{'─' * 100}")
-                for m in transitional_group:
-                    preview = m['content'][:150] + '...' if len(m['content']) > 150 else m['content']
-                    print(f"  • {preview}")
+                if format_style == 'border':
+                    print(f"\n▌ ASSISTANT - working... ({len(transitional_group)} transitional messages)")
+                    print("▌")
+                    for m in transitional_group:
+                        preview = m['content'][:150] + '...' if len(m['content']) > 150 else m['content']
+                        print(f"▌   • {preview}")
+                else:
+                    print(f"\n{'─' * 100}")
+                    print(f"ASSISTANT - working... ({len(transitional_group)} transitional messages)")
+                    if format_style == 'box':
+                        print(f"{'─' * 100}")
+                    for m in transitional_group:
+                        preview = m['content'][:150] + '...' if len(m['content']) > 150 else m['content']
+                        print(f"  • {preview}")
                 print()
                 grouped_count += len(transitional_group)
             elif len(transitional_group) == 1:
@@ -767,20 +842,41 @@ class BasicDisplay:
             transitional_group.clear()
 
         def show_message(pm):
-            print(f"\n{'─' * 100}")
-            print(f"{pm['role'].upper()} - {pm['timestamp']}")
-            print(f"{'─' * 100}")
+            role = pm['role']
+            timestamp = pm['timestamp']
+            emoji = "👤" if role == 'user' else "🤖"
+            title = f"{emoji} {role.upper()} - {timestamp}"
+
+            if format_style == 'border':
+                border = "▌" if role == 'assistant' else "▌"
+                print(f"\n{border} {title}")
+                print(f"{border}")
+            else:
+                print(f"\n{title}")
+                print(f"{'─' * 100}")
 
             content = pm['content']
             # Special case: "This session is being continued" messages use 2000 char limit
             effective_max = max_length
             if content.lower().startswith("this session is being continued"):
                 effective_max = min(max_length, 2000) if max_length and max_length > 0 else 2000
+
+            truncated = False
+            original_len = len(content)
             if effective_max is not None and effective_max > 0 and len(content) > effective_max:
-                print(content[:effective_max])
-                print(f"\n... (message truncated, {len(content)} total chars)")
+                content = content[:effective_max]
+                truncated = True
+
+            if format_style == 'border':
+                border = "▌" if role == 'assistant' else "▌"
+                for line in content.split('\n'):
+                    print(f"{border} {line}")
+                if truncated:
+                    print(f"{border} ... (message truncated, {original_len} total chars)")
             else:
                 print(content)
+                if truncated:
+                    print(f"\n... (message truncated, {original_len} total chars)")
             print()
 
         for pm in processed_msgs:
@@ -837,11 +933,15 @@ Examples:
   %(prog)s list --project liquidity       # Filter by project path
   %(prog)s search "test infra"            # Search in summaries/prompts
   %(prog)s grep "CompilerConfig"          # Search in all message content
-  %(prog)s view 5                         # View session #5 from list
+  %(prog)s view 5                         # View session #5 (border format)
+  %(prog)s view 1 --project liquidity     # View #1 from filtered list
+  %(prog)s view 5 --format box            # View with panel boxes
+  %(prog)s view 5 --format simple         # View with header+rule (copy-paste friendly)
   %(prog)s view 5 --max-message-length 0  # View with no truncation
-  %(prog)s view 5 --max-message-length 5000  # Truncate at 5000 chars
   %(prog)s view SESSION_ID                # View by session ID
   %(prog)s stats                          # Show statistics
+
+Tip: Use the same --project/--branch filters on both list and view to match numbers.
         """
     )
 
@@ -868,6 +968,8 @@ Examples:
                        help='Include thinking blocks in view output (excluded by default)')
     parser.add_argument('--include-empty', action='store_true',
                        help='Include empty messages (tool calls, etc.) in view output')
+    parser.add_argument('--format', choices=['box', 'simple', 'border'], default='border',
+                       help='Message display format: border (default, left border), box (panels), simple (header+rule)')
     parser.add_argument('--color', choices=['always', 'auto', 'never'], default='always',
                        help='Color output mode (default: always). Use "always" for piping to less -r')
 
@@ -935,6 +1037,24 @@ Examples:
             return
 
         sessions = browser.get_all_sessions()
+
+        # Apply the same filters as 'list' command so numbers match
+        if args.branch:
+            sessions = [s for s in sessions if args.branch in s.get('gitBranch', '')]
+
+        if args.project:
+            sessions = [s for s in sessions if args.project.lower() in s.get('projectPath', '').lower()]
+
+        if args.since:
+            since_date = datetime.fromisoformat(args.since)
+            sessions = [s for s in sessions
+                       if datetime.fromisoformat(s.get('modified', '').replace('Z', '+00:00')) >= since_date]
+
+        if args.until:
+            until_date = datetime.fromisoformat(args.until)
+            sessions = [s for s in sessions
+                       if datetime.fromisoformat(s.get('modified', '').replace('Z', '+00:00')) <= until_date]
+
         sorted_sessions = sorted(sessions, key=lambda x: x.get('modified', ''), reverse=True)
 
         # Try to parse as number first
@@ -943,7 +1063,10 @@ Examples:
             if 0 <= idx < len(sorted_sessions):
                 session = sorted_sessions[idx]
             else:
-                print(f"Error: Session number {args.query} out of range (1-{len(sorted_sessions)})")
+                filter_msg = ""
+                if args.project or args.branch or args.since or args.until:
+                    filter_msg = " (with current filters)"
+                print(f"Error: Session number {args.query} out of range (1-{len(sorted_sessions)}){filter_msg}")
                 return
         except ValueError:
             # Try as session ID
@@ -957,7 +1080,8 @@ Examples:
         max_length = None if args.max_message_length == 0 else args.max_message_length
         display.show_session_detail(session, messages, max_length,
                                    include_thinking=args.include_thinking,
-                                   include_empty=args.include_empty)
+                                   include_empty=args.include_empty,
+                                   format_style=args.format)
 
     elif args.command == 'stats':
         sessions = browser.get_all_sessions()
