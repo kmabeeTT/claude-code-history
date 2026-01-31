@@ -13,6 +13,8 @@ A beautiful terminal-based tool for browsing and searching your Claude Code chat
 - 🗓️ **Filter** by date range, branch, or project path
 - ✅ **Index status** column shows which sessions have AI-generated summaries
 - 📐 **Dynamic column widths** adjust to content for cleaner output
+- 🖥️ **Interactive TUI mode** with vim-like navigation, session deletion, and filtering
+- 📝 **Automatic markdown export** with smart caching and configurable viewer/editor
 
 ## Installation
 
@@ -218,10 +220,88 @@ Make sure Claude Code has been run at least once in your project directory.
 ### Permission denied
 Make the script executable: `chmod +x claude-history-browser.py`
 
+## TUI Mode (ch-tui / ch-list)
+
+An interactive terminal UI for browsing sessions with vim-like navigation.
+
+```bash
+# Launch TUI
+./claude-history-tui.py
+# Or with aliases
+ch-tui
+ch-list
+```
+
+### Key Bindings
+
+| Key | Action |
+|-----|--------|
+| `j/k` | Navigate up/down |
+| `Enter` | View session conversation |
+| `d` | Delete session (with confirmation) |
+| `m` | Edit markdown in editor |
+| `v` | View markdown in viewer |
+| `M` | Force regenerate markdown |
+| `/` | Search filter |
+| `p` | Project filter (regex) |
+| `r` | Refresh session list |
+| `q` | Quit |
+
+### Markdown Export
+
+The TUI automatically generates and caches markdown files from your sessions:
+
+- **Location:** `~/.claude/markdown/{project-hash}/{sessionId}.md`
+- **Caching:** Uses mtime comparison for fast cache invalidation
+- **Background generation:** Stale files regenerate on startup
+- **MD column:** Shows `✓` when markdown is up-to-date
+
+#### Markdown Format
+
+```markdown
+# [Summary or first prompt]
+
+**Session ID:** `uuid`
+**Project:** `/path/to/project`
+**Branch:** `main`
+**Created:** 2026-01-30 18:34
+**Modified:** 2026-01-30 19:44
+**Messages:** 42
+
+---
+
+## User (2026-01-30 18:34)
+
+User message content...
+
+---
+
+## Assistant (2026-01-30 18:35)
+
+Assistant response...
+
+---
+```
+
+#### Editor/Viewer Configuration
+
+**Editor (m key):**
+1. `CLAUDE_HISTORY_EDITOR` environment variable
+2. `EDITOR` environment variable
+3. `cursor` (if available)
+4. `open` (macOS) / `xdg-open` (Linux)
+
+**Viewer (v key):**
+1. `CLAUDE_HISTORY_MD_VIEWER` environment variable
+2. `open` (macOS - uses system default app)
+3. `glow` (Linux, if available)
+4. `xdg-open` (Linux fallback)
+
+To use a specific app as your markdown viewer on macOS, set it as the default app for `.md` files in Finder (Get Info → Open with → Change All).
+
 ## Future Enhancements
 
 ### High Value
-- **Export to Markdown** - `view 3 --export md` to save a conversation for sharing or archiving
 - **JSON output mode** - `list --json` for scripting/piping to `jq`
 - **Show files mentioned** - Extract file paths discussed in a session (useful for "what did I work on?")
 - **Better stats** - Activity by day/week, most active projects, average session length
@@ -229,11 +309,9 @@ Make the script executable: `chmod +x claude-history-browser.py`
 ### Medium Value
 - **Regex search** - `grep --regex "def \w+\("` for pattern matching
 - **Message count filter** - `list --min-messages 50` to find substantial conversations
-- **Delete/archive old sessions** - Cleanup utility with confirmation
 - **Diff sessions** - Compare two related sessions to see what changed
 
 ### Nice to Have
-- **Interactive TUI mode** - Arrow key navigation through sessions (using `textual` or similar)
 - **Copy session ID to clipboard** - Quick `view 3 --copy-id`
 - **Continuation chain** - Show which sessions were continued from others (detect "This session is being continued")
 - **Timeline/calendar view** - Visual activity heatmap

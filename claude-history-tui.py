@@ -5,15 +5,18 @@ An interactive terminal UI for browsing and managing Claude Code sessions.
 """
 
 import argparse
+import hashlib
 import json
 import os
+import platform
 import re
 import shutil
+import subprocess
 import textwrap
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -322,6 +325,205 @@ class SessionDeletionService:
         return results
 
 
+class MarkdownGenerator:
+    """Generates and manages markdown exports of Claude sessions."""
+
+    def __init__(self, browser: ClaudeHistoryBrowser):
+        self.browser = browser
+        self.markdown_dir = browser.claude_dir / "markdown"
+
+    def get_project_hash(self, project_dir: Path) -> str:
+        """Get the hash for a project directory (matches Claude's structure)."""
+        # The project_dir name is already the hash from Claude's projects structure
+        return project_dir.name
+
+    def get_markdown_path(self, session: Dict) -> Path:
+        """Get the markdown file path for a session."""
+        project_dir = Path(session.get("project_dir", ""))
+        project_hash = self.get_project_hash(project_dir)
+        session_id = session.get("sessionId", "")
+        return self.markdown_dir / project_hash / f"{session_id}.md"
+
+    def needs_regeneration(self, session: Dict) -> bool:
+        """Check if markdown needs to be regenerated based on mtime."""
+        session_path = Path(session.get("fullPath", ""))
+        markdown_path = self.get_markdown_path(session)
+
+        if not markdown_path.exists():
+            return True
+        if not session_path.exists():
+            return False
+
+        return session_path.stat().st_mtime > markdown_path.stat().st_mtime
+
+    def generate_markdown(self, session: Dict, force: bool = False) -> Tuple[bool, Path]:
+        """Generate markdown file for a session.
+
+        Returns (success, markdown_path) tuple.
+        """
+        if not force and not self.needs_regeneration(session):
+            return (True, self.get_markdown_path(session))
+
+        session_path = Path(session.get("fullPath", ""))
+        markdown_path = self.get_markdown_path(session)
+
+        # Ensure directory exists
+        markdown_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Load messages
+        messages = self.browser.load_session_messages(session_path)
+        if not messages:
+            return (False, markdown_path)
+
+        # Build markdown content
+        lines = []
+
+        # Header
+        summary = session.get("summary", "Session")
+        lines.append(f"# {summary}")
+        lines.append("")
+
+        # Metadata
+        session_id = session.get("sessionId", "")
+        project_path = session.get("projectPath", "N/A") or "N/A"
+        branch = session.get("gitBranch", "N/A") or "N/A"
+        created = self.browser.format_date(session.get("created", ""))
+        modified = self.browser.format_date(session.get("modified", ""))
+        msg_count = session.get("messageCount", len(messages))
+
+        lines.append(f"**Session ID:** `{session_id}`")
+        lines.append(f"**Project:** `{project_path}`")
+        lines.append(f"**Branch:** `{branch}`")
+        lines.append(f"**Created:** {created}")
+        lines.append(f"**Modified:** {modified}")
+        lines.append(f"**Messages:** {msg_count}")
+        lines.append("")
+        lines.append("---")
+
+        # Messages
+        for msg in messages:
+            role = msg.get("message", {}).get("role", "unknown")
+            timestamp = self.browser.format_date(msg.get("timestamp", ""))
+            content = self.browser._extract_message_text(msg)
+
+            # Skip empty/noise messages
+            if not content.strip() or self.browser._is_system_noise(content):
+                continue
+
+            lines.append("")
+            lines.append(f"## {role.capitalize()} ({timestamp})")
+            lines.append("")
+            lines.append(content)
+            lines.append("")
+            lines.append("---")
+
+        # Write file
+        try:
+            markdown_path.write_text("\n".join(lines), encoding="utf-8")
+            return (True, markdown_path)
+        except Exception:
+            return (False, markdown_path)
+
+    def generate_all_stale(self, sessions: List[Dict]) -> int:
+        """Generate markdown for all sessions that need regeneration.
+
+        Returns the number of files generated.
+        """
+        generated = 0
+        for session in sessions:
+            if self.needs_regeneration(session):
+                success, _ = self.generate_markdown(session)
+                if success:
+                    generated += 1
+        return generated
+
+    def get_editor(self) -> str:
+        """Get the editor command to use."""
+        # Priority order
+        editor = os.environ.get("CLAUDE_HISTORY_EDITOR")
+        if editor:
+            return editor
+
+        editor = os.environ.get("EDITOR")
+        if editor:
+            return editor
+
+        # Check if cursor is available
+        if shutil.which("cursor"):
+            return "cursor"
+
+        # Fallback to system open command
+        if platform.system() == "Darwin":
+            return "open"
+        else:
+            return "xdg-open"
+
+    def open_in_editor(self, session: Dict) -> bool:
+        """Open a session's markdown in the configured editor.
+
+        Generates markdown if it doesn't exist or is stale.
+        Returns True if successful.
+        """
+        # Ensure markdown is up-to-date
+        success, markdown_path = self.generate_markdown(session)
+        if not success:
+            return False
+
+        editor = self.get_editor()
+        try:
+            subprocess.Popen([editor, str(markdown_path)])
+            return True
+        except Exception:
+            return False
+
+    def get_viewer(self) -> Tuple[str, List[str]]:
+        """Get the markdown viewer command to use.
+
+        Returns (viewer_name, command_args) tuple.
+        Priority: CLAUDE_HISTORY_MD_VIEWER > open (macOS default app) > glow > xdg-open
+        """
+        # Check environment variable first
+        viewer = os.environ.get("CLAUDE_HISTORY_MD_VIEWER")
+        if viewer:
+            return (viewer, [viewer])
+
+        # On macOS, use system default app for .md files
+        if platform.system() == "Darwin":
+            return ("default app", ["open"])
+
+        # Prefer glow for terminal rendering on Linux
+        if shutil.which("glow"):
+            return ("glow", ["glow", "-p"])  # -p for pager mode
+
+        # Linux fallback
+        return ("xdg-open", ["xdg-open"])
+
+    def view_markdown(self, session: Dict) -> Tuple[bool, str]:
+        """View a session's markdown in a viewer.
+
+        Generates markdown if it doesn't exist or is stale.
+        Returns (success, viewer_name) tuple.
+        """
+        # Ensure markdown is up-to-date
+        success, markdown_path = self.generate_markdown(session)
+        if not success:
+            return (False, "")
+
+        viewer_name, cmd_args = self.get_viewer()
+        try:
+            # For qlmanage, redirect stderr to suppress debug output
+            if "qlmanage" in cmd_args:
+                subprocess.Popen(
+                    cmd_args + [str(markdown_path)],
+                    stderr=subprocess.DEVNULL
+                )
+            else:
+                subprocess.Popen(cmd_args + [str(markdown_path)])
+            return (True, viewer_name)
+        except Exception:
+            return (False, viewer_name)
+
+
 class SessionPreview(Static):
     """Preview panel showing selected session details."""
 
@@ -438,6 +640,9 @@ class SessionViewerScreen(Screen):
         Binding("page_down", "page_down", "PgDn", show=False),
         # Shadow app bindings to hide them from footer
         Binding("d", "noop", "Delete", show=False),
+        Binding("m", "noop", "Edit MD", show=False),
+        Binding("v", "noop", "View MD", show=False),
+        Binding("M", "noop", "Regen MD", show=False),
         Binding("/", "noop", "Search", show=False),
         Binding("p", "noop", "Project", show=False),
         Binding("r", "noop", "Refresh", show=False),
@@ -778,6 +983,9 @@ class ClaudeHistoryTUI(App):
         Binding("k", "cursor_up", "Up", show=False),
         Binding("enter", "view_session", "View"),
         Binding("d", "delete_session", "Delete"),
+        Binding("m", "open_markdown", "Edit MD"),
+        Binding("v", "view_markdown", "View MD"),
+        Binding("M", "regen_markdown", "Regen MD", show=False),
         Binding("/", "search", "Search"),
         Binding("p", "project_filter", "Project"),
         Binding("r", "refresh", "Refresh"),
@@ -793,6 +1001,7 @@ class ClaudeHistoryTUI(App):
         super().__init__()
         self.browser = ClaudeHistoryBrowser()
         self.deletion_service = SessionDeletionService(self.browser)
+        self.markdown_generator = MarkdownGenerator(self.browser)
         self.sessions: List[Dict] = []
         self.filtered_sessions: List[Dict] = []
         self.branch_filter = branch_filter
@@ -802,6 +1011,7 @@ class ClaudeHistoryTUI(App):
         self.search_query = ""
         self.project_filter_mode = False
         self.project_filter_regex = ""
+        self._markdown_status: Dict[str, bool] = {}  # session_id -> is_up_to_date
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -823,6 +1033,26 @@ class ClaudeHistoryTUI(App):
         # Focus the table so arrow keys work immediately
         table = self.query_one("#session-list", DataTable)
         table.focus()
+        # Start background markdown generation
+        self.run_worker(self._generate_stale_markdown, thread=True)
+
+    def _generate_stale_markdown(self) -> int:
+        """Background worker to generate stale markdown files."""
+        generated = 0
+        for session in self.sessions:
+            if self.markdown_generator.needs_regeneration(session):
+                success, _ = self.markdown_generator.generate_markdown(session)
+                if success:
+                    session_id = session.get("sessionId", "")
+                    self._markdown_status[session_id] = True
+                    generated += 1
+        return generated
+
+    def on_worker_state_changed(self, event) -> None:
+        """Handle worker completion to refresh the MD column."""
+        if event.worker.name == "_generate_stale_markdown" and event.worker.is_finished:
+            # Refresh the table to update MD column (already on main thread)
+            self.populate_table()
 
     def load_sessions(self):
         """Load all sessions and apply filters."""
@@ -835,21 +1065,33 @@ class ClaudeHistoryTUI(App):
         table.clear(columns=True)
 
         table.add_column("#", width=4)
+        table.add_column("MD", width=3)
         table.add_column("Date", width=16)
-        table.add_column("Summary", width=50)
+        table.add_column("Summary", width=48)
         table.add_column("Msgs", width=5)
         table.add_column("Branch", width=15)
-        table.add_column("Project", width=33)
+        table.add_column("Project", width=30)
 
         home_dir = os.path.expanduser("~")
 
         for idx, session in enumerate(self.filtered_sessions, 1):
+            session_id = session.get("sessionId", "")
+
+            # Get markdown status from cache or check
+            if session_id in self._markdown_status:
+                md_up_to_date = self._markdown_status[session_id]
+            else:
+                md_up_to_date = not self.markdown_generator.needs_regeneration(session)
+                self._markdown_status[session_id] = md_up_to_date
+
+            md_status = "✓" if md_up_to_date else ""
+
             date = self.browser.format_date(
                 session.get("modified", session.get("created", ""))
             )
             summary = session.get("summary", "No summary")
-            if len(summary) > 47:
-                summary = summary[:44] + "..."
+            if len(summary) > 45:
+                summary = summary[:42] + "..."
             msg_count = str(session.get("messageCount", 0))
             branch = session.get("gitBranch", "") or ""
             if len(branch) > 12:
@@ -857,10 +1099,10 @@ class ClaudeHistoryTUI(App):
             project = session.get("projectPath", "") or ""
             if project.startswith(home_dir):
                 project = "~" + project[len(home_dir):]
-            if len(project) > 30:
-                project = "..." + project[-(27):]
+            if len(project) > 27:
+                project = "..." + project[-(24):]
 
-            table.add_row(str(idx), date, summary, msg_count, branch, project)
+            table.add_row(str(idx), md_status, date, summary, msg_count, branch, project)
 
         # Update preview with first session
         if self.filtered_sessions:
@@ -927,6 +1169,46 @@ class ClaudeHistoryTUI(App):
                     severity="information",
                     timeout=3,
                 )
+
+    def action_open_markdown(self):
+        """Open markdown in editor (generate if missing or stale)."""
+        session = self.get_selected_session()
+        if session:
+            success = self.markdown_generator.open_in_editor(session)
+            if success:
+                # Update status cache
+                session_id = session.get("sessionId", "")
+                self._markdown_status[session_id] = True
+                self.populate_table()
+                self.notify("Opened markdown in editor", severity="information", timeout=2)
+            else:
+                self.notify("Failed to open markdown", severity="error", timeout=3)
+
+    def action_regen_markdown(self):
+        """Force regenerate markdown for selected session."""
+        session = self.get_selected_session()
+        if session:
+            success, path = self.markdown_generator.generate_markdown(session, force=True)
+            if success:
+                session_id = session.get("sessionId", "")
+                self._markdown_status[session_id] = True
+                self.populate_table()
+                self.notify(f"Regenerated markdown", severity="information", timeout=2)
+            else:
+                self.notify("Failed to regenerate markdown", severity="error", timeout=3)
+
+    def action_view_markdown(self):
+        """View markdown in a viewer (glow or Quick Look)."""
+        session = self.get_selected_session()
+        if session:
+            success, viewer_name = self.markdown_generator.view_markdown(session)
+            if success:
+                session_id = session.get("sessionId", "")
+                self._markdown_status[session_id] = True
+                self.populate_table()
+                self.notify(f"Opened in {viewer_name}", severity="information", timeout=2)
+            else:
+                self.notify("Failed to open viewer", severity="error", timeout=3)
 
     def action_search(self):
         """Toggle search mode."""
