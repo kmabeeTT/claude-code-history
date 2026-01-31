@@ -623,6 +623,28 @@ Press [bold]y[/bold] to confirm deletion or [bold]n[/bold]/[bold]Escape[/bold] t
         self.dismiss(False)
 
 
+class InstantScrollRichLog(RichLog):
+    """RichLog with instant scrolling (no animation)."""
+
+    def action_scroll_up(self) -> None:
+        self.scroll_y -= 3
+
+    def action_scroll_down(self) -> None:
+        self.scroll_y += 3
+
+    def action_page_up(self) -> None:
+        self.scroll_y -= self.size.height
+
+    def action_page_down(self) -> None:
+        self.scroll_y += self.size.height
+
+    def action_scroll_home(self) -> None:
+        self.scroll_y = 0
+
+    def action_scroll_end(self) -> None:
+        self.scroll_y = self.max_scroll_y
+
+
 class SessionViewerScreen(Screen):
     """Full screen view of a session's conversation."""
 
@@ -634,6 +656,8 @@ class SessionViewerScreen(Screen):
         Binding("k", "scroll_up", "Up", show=False),
         Binding("g", "scroll_top", "Top", show=False),
         Binding("G", "scroll_bottom", "Bottom", show=False),
+        Binding("home", "scroll_top", "Home", show=False),
+        Binding("end", "scroll_bottom", "End", show=False),
         Binding("ctrl+a", "scroll_top", "Home"),
         Binding("ctrl+e", "scroll_bottom", "End"),
         Binding("page_up", "page_up", "PgUp", show=False),
@@ -661,11 +685,14 @@ class SessionViewerScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield RichLog(id="conversation", wrap=True, highlight=True, markup=True)
+        yield InstantScrollRichLog(id="conversation", wrap=True, highlight=True, markup=True)
         yield Footer()
 
-    def render_markdown_with_border(self, content: str, style: str, width: int = 100) -> List[Text]:
+    def render_markdown_with_border(self, content: str, style: str, width: int = 0) -> List[Text]:
         """Render markdown content with colored left border."""
+        # Use terminal width if not specified
+        if width <= 0:
+            width = shutil.get_terminal_size().columns - 5
         lines = []
         try:
             # Create a temporary console to capture markdown rendering
@@ -769,7 +796,7 @@ class SessionViewerScreen(Screen):
 
     def on_mount(self):
         browser = ClaudeHistoryBrowser()
-        log = self.query_one("#conversation", RichLog)
+        log = self.query_one("#conversation", InstantScrollRichLog)
 
         # Session header
         summary = self.session.get("summary", "No summary")
@@ -858,28 +885,28 @@ class SessionViewerScreen(Screen):
         pass
 
     def action_scroll_down(self):
-        log = self.query_one("#conversation", RichLog)
-        log.scroll_down()
+        log = self.query_one("#conversation", InstantScrollRichLog)
+        log.action_scroll_down()
 
     def action_scroll_up(self):
-        log = self.query_one("#conversation", RichLog)
-        log.scroll_up()
+        log = self.query_one("#conversation", InstantScrollRichLog)
+        log.action_scroll_up()
 
     def action_scroll_top(self):
-        log = self.query_one("#conversation", RichLog)
-        log.scroll_home(duration=0.15)
+        log = self.query_one("#conversation", InstantScrollRichLog)
+        log.action_scroll_home()
 
     def action_scroll_bottom(self):
-        log = self.query_one("#conversation", RichLog)
-        log.scroll_end(duration=0.15)
+        log = self.query_one("#conversation", InstantScrollRichLog)
+        log.action_scroll_end()
 
     def action_page_up(self):
-        log = self.query_one("#conversation", RichLog)
-        log.scroll_page_up(duration=0.1)
+        log = self.query_one("#conversation", InstantScrollRichLog)
+        log.action_page_up()
 
     def action_page_down(self):
-        log = self.query_one("#conversation", RichLog)
-        log.scroll_page_down(duration=0.1)
+        log = self.query_one("#conversation", InstantScrollRichLog)
+        log.action_page_down()
 
 
 class SearchInput(Input):
@@ -896,6 +923,11 @@ class ClaudeHistoryTUI(App):
     CSS = """
     Screen {
         background: $surface;
+    }
+
+    #conversation {
+        width: 100%;
+        height: 100%;
     }
 
     #main-container {
