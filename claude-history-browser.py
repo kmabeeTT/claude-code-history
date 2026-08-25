@@ -57,7 +57,7 @@ def init_console(color_mode: str = 'always'):
 
 class ClaudeHistoryBrowser:
     def __init__(self, claude_dir: str = None):
-        self.claude_dir = Path(claude_dir or os.path.expanduser("~/.claude"))
+        self.claude_dir = Path(claude_dir or os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"))
         self.projects_dir = self.claude_dir / "projects"
         self.sessions_cache = {}
 

@@ -45,7 +45,7 @@ class ClaudeHistoryBrowser:
     """Session data access layer - shared with claude-history-browser.py"""
 
     def __init__(self, claude_dir: str = None):
-        self.claude_dir = Path(claude_dir or os.path.expanduser("~/.claude"))
+        self.claude_dir = Path(claude_dir or os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"))
         self.projects_dir = self.claude_dir / "projects"
         self.file_history_dir = self.claude_dir / "file-history"
 
