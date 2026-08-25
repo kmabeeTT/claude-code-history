@@ -21,11 +21,13 @@ A beautiful terminal-based tool for browsing and searching your Claude Code chat
 ### Prerequisites
 
 ```bash
-# Install the rich library for beautiful output
-pip install rich
+# Install dependencies (rich for beautiful output, textual for the TUI)
+pip install -r requirements.txt
 ```
 
-If you don't have `rich` installed, the tool will still work with basic text output.
+If you don't have `rich` installed, `claude-history-browser.py` will still work with basic
+text output. `textual` is required for `claude-history-tui.py` (ch-tui) — without it, the
+TUI fails at startup with `ModuleNotFoundError: No module named 'textual'`.
 
 ### Terminal Width
 
@@ -213,6 +215,10 @@ To index old sessions, simply start and `/exit` a new session in that project di
 Install with: `pip install rich`
 
 The tool will still work without it, just with basic text output.
+
+### "No module named 'textual'"
+The TUI (`ch-tui`) requires `textual`, unlike `claude-history-browser.py` which only needs
+`rich`. Install with: `pip install textual` (or `pip install -r requirements.txt` for both).
 
 ### No sessions found
 Make sure Claude Code has been run at least once in your project directory.
