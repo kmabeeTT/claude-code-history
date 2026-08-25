@@ -84,6 +84,34 @@ class ClaudeHistoryBrowser:
                     continue
         return messages
 
+    def extract_session_title(self, session_file: Path) -> Optional[str]:
+        """Extract the user-set or AI-generated display title for a session, if any.
+
+        Sessions can carry a 'custom-title' entry (set via the `claude` rename
+        command) and/or an 'ai-title' entry (auto-generated). Custom titles win.
+        """
+        if not session_file.exists():
+            return None
+
+        custom_title = None
+        ai_title = None
+        try:
+            with open(session_file, "r") as f:
+                for line in f:
+                    try:
+                        data = json.loads(line.strip())
+                    except json.JSONDecodeError:
+                        continue
+                    entry_type = data.get("type")
+                    if entry_type == "custom-title" and data.get("customTitle"):
+                        custom_title = data["customTitle"]
+                    elif entry_type == "ai-title" and data.get("aiTitle"):
+                        ai_title = data["aiTitle"]
+        except OSError:
+            return None
+
+        return custom_title or ai_title
+
     def extract_session_metadata(self, session_file: Path) -> Optional[Dict]:
         """Extract metadata from a session .jsonl file directly."""
         try:
@@ -112,11 +140,16 @@ class ClaudeHistoryBrowser:
             if len(summary) < len(first_prompt.split("\n")[0]):
                 summary += "..."
 
+            title = self.extract_session_title(session_file)
+            if title:
+                summary = title
+
             return {
                 "sessionId": session_id,
                 "fullPath": str(session_file),
                 "firstPrompt": first_prompt,
                 "summary": summary,
+                "hasTitle": bool(title),
                 "messageCount": len(messages),
                 "created": created,
                 "modified": modified,
@@ -235,6 +268,10 @@ class ClaudeHistoryBrowser:
                 entry["project_dir"] = str(project_dir)
                 entry["project_name"] = project_dir.name
                 entry["isUnindexed"] = False
+                title = self.extract_session_title(Path(entry["fullPath"])) if entry.get("fullPath") else None
+                if title:
+                    entry["summary"] = title
+                entry["hasTitle"] = bool(title)
                 all_sessions.append(entry)
                 indexed_session_ids.add(entry["sessionId"])
 
