@@ -1128,18 +1128,52 @@ class ClaudeHistoryTUI(App):
         self.sessions = self.browser.get_all_sessions()
         self.apply_filters()
 
-    def populate_table(self):
+    def _column_widths(self, screen_width: Optional[int] = None) -> Tuple[int, int, int]:
+        """Compute Summary/Branch/Project widths to fill the table's available width.
+
+        #, MD, Date and Msgs stay fixed; the remaining space is split between the
+        three text columns so the table stretches to match the window/pane width
+        instead of leaving dead space on wide terminals.
+
+        Derived from #session-list-container's CSS width (75% of the screen, minus
+        its 2-column border) rather than the container/table's own .size, which lags
+        a frame behind a resize. Pass screen_width explicitly from a Resize event's
+        event.size (self.size itself hasn't been updated yet when that fires); it
+        defaults to self.size.width for calls outside a resize (e.g. initial load).
+        """
+        if screen_width is None:
+            screen_width = self.size.width
+
+        fixed_width = 4 + 3 + 16 + 5  # #, MD, Date, Msgs
+        num_columns = 7
+        padding_overhead = num_columns * 2 + 2  # per-column cell padding + scrollbar slack
+
+        avail = int(screen_width * 0.75) - 2
+        if avail <= fixed_width + padding_overhead + 60:
+            # Not laid out yet (or terminal too narrow) -- use the old fixed defaults.
+            return 48, 15, 30
+
+        flexible = avail - fixed_width - padding_overhead
+        summary_width = max(30, int(flexible * 0.5))
+        branch_width = max(12, int(flexible * 0.2))
+        project_width = max(20, flexible - summary_width - branch_width)
+        return summary_width, branch_width, project_width
+
+    def populate_table(self, screen_width: Optional[int] = None):
         """Populate the data table with sessions."""
         table = self.query_one("#session-list", DataTable)
+        cursor_row = table.cursor_row
         table.clear(columns=True)
+
+        summary_width, branch_width, project_width = self._column_widths(screen_width)
 
         table.add_column("#", width=4)
         table.add_column("MD", width=3)
         table.add_column("Date", width=16)
-        table.add_column("Summary", width=48)
+        table.add_column("Summary", width=summary_width)
         table.add_column("Msgs", width=5)
-        table.add_column("Branch", width=15)
-        table.add_column("Project", width=30)
+        table.add_column("Branch", width=branch_width)
+        table.add_column("Project", width=project_width)
 
         home_dir = os.path.expanduser("~")
 
@@ -1159,27 +1193,35 @@ class ClaudeHistoryTUI(App):
                 session.get("modified", session.get("created", ""))
             )
             summary = session.get("summary", "No summary")
-            if len(summary) > 45:
-                summary = summary[:42] + "..."
+            if len(summary) > summary_width:
+                summary = summary[:summary_width - 3] + "..."
             msg_count = str(session.get("messageCount", 0))
             branch = session.get("gitBranch", "") or ""
-            if len(branch) > 12:
-                branch = branch[:9] + "..."
+            if len(branch) > branch_width:
+                branch = branch[:branch_width - 3] + "..."
             project = session.get("projectPath", "") or ""
             if project.startswith(home_dir):
                 project = "~" + project[len(home_dir):]
-            if len(project) > 27:
-                project = "..." + project[-(24):]
+            if len(project) > project_width:
+                project = "..." + project[-(project_width - 3):]
 
             table.add_row(str(idx), md_status, date, summary, msg_count, branch, project)
 
-        # Update preview with first session
+        # Restore cursor position (falls back to the top row) and sync the preview to it.
         if self.filtered_sessions:
+            if cursor_row is not None and cursor_row < len(self.filtered_sessions):
+                table.move_cursor(row=cursor_row)
+            else:
+                cursor_row = 0
             preview = self.query_one("#preview", SessionPreview)
-            preview.update_session(self.filtered_sessions[0])
+            preview.update_session(self.filtered_sessions[cursor_row])
 
         # Update title with count
         self.sub_title = f"{len(self.filtered_sessions)} sessions"
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Re-flow column widths when the terminal/window is resized."""
+        self.populate_table(screen_width=event.size.width)
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted):
         """Update preview when row selection changes."""
