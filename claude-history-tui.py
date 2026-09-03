@@ -33,7 +33,11 @@ from textual.widgets import (
     RichLog,
 )
 from textual.message import Message
+from textual.strip import Strip
 from textual import events
+from rich.cells import cell_len
+from rich.segment import Segment
+from rich.style import Style
 from rich.text import Text
 from rich.panel import Panel
 from rich.markdown import Markdown
@@ -661,7 +665,17 @@ Press [bold]y[/bold] to confirm deletion or [bold]n[/bold]/[bold]Escape[/bold] t
 
 
 class InstantScrollRichLog(RichLog):
-    """RichLog with instant scrolling (no animation)."""
+    """RichLog with instant scrolling (no animation) and in-document search."""
+
+    # Highlight styles for search hits (all hits vs. the currently selected one)
+    MATCH_STYLE = Style(color="black", bgcolor="yellow")
+    CURRENT_MATCH_STYLE = Style(color="black", bgcolor="bright_cyan", bold=True)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._plain_lines: List[str] = []
+        self._match_spans: Dict[int, List[Tuple[int, int]]] = {}
+        self._current_match: Optional[Tuple[int, int, int]] = None
 
     def action_scroll_up(self) -> None:
         self.scroll_y -= 3
@@ -681,14 +695,125 @@ class InstantScrollRichLog(RichLog):
     def action_scroll_end(self) -> None:
         self.scroll_y = self.max_scroll_y
 
+    # ------------------------------------------------------------------
+    # In-document search
+    # ------------------------------------------------------------------
+    @property
+    def plain_lines(self) -> List[str]:
+        """Plain text of every rendered line, cached until the log changes."""
+        if len(self._plain_lines) != len(self.lines):
+            self._plain_lines = [strip.text for strip in self.lines]
+        return self._plain_lines
+
+    def find_matches(self, term: str) -> List[Tuple[int, int, int]]:
+        """Find every occurrence of term as (line, cell_start, cell_end).
+
+        The term is treated as a regex; an invalid one falls back to a literal
+        search. Matching is case-insensitive unless the term contains an
+        uppercase character (vim's "smartcase").
+        """
+        if not term:
+            return []
+        flags = 0 if any(c.isupper() for c in term) else re.IGNORECASE
+        try:
+            pattern = re.compile(term, flags)
+        except re.error:
+            pattern = re.compile(re.escape(term), flags)
+
+        matches = []
+        for line_no, text in enumerate(self.plain_lines):
+            for m in pattern.finditer(text):
+                if m.start() == m.end():
+                    continue
+                # Character offsets -> cell offsets (wide chars/emoji)
+                matches.append(
+                    (line_no, cell_len(text[:m.start()]), cell_len(text[:m.end()]))
+                )
+        return matches
+
+    def set_matches(
+        self,
+        matches: List[Tuple[int, int, int]],
+        current: Optional[Tuple[int, int, int]] = None,
+    ):
+        """Highlight the given matches, with current drawn differently."""
+        spans: Dict[int, List[Tuple[int, int]]] = {}
+        for line_no, start, end in matches:
+            spans.setdefault(line_no, []).append((start, end))
+        self._match_spans = spans
+        self._current_match = current
+        self.refresh()
+
+    def clear_matches(self):
+        """Remove all search highlighting."""
+        if self._match_spans or self._current_match:
+            self._match_spans = {}
+            self._current_match = None
+            self.refresh()
+
+    def render_line(self, y: int) -> Strip:
+        strip = super().render_line(y)
+        if not self._match_spans:
+            return strip
+        line_no = self.scroll_offset.y + y
+        spans = self._match_spans.get(line_no)
+        if not spans:
+            return strip
+        return self._highlight_line(strip, line_no, spans)
+
+    def _highlight_line(
+        self, strip: Strip, line_no: int, spans: List[Tuple[int, int]]
+    ) -> Strip:
+        """Re-style the matched regions of an already rendered line."""
+        scroll_x = self.scroll_offset.x
+        cell_length = strip.cell_length
+
+        regions = []
+        cuts = set()
+        for start, end in spans:
+            visible_start = max(0, min(start - scroll_x, cell_length))
+            visible_end = max(0, min(end - scroll_x, cell_length))
+            if visible_end <= visible_start:
+                continue
+            is_current = self._current_match == (line_no, start, end)
+            regions.append((visible_start, visible_end, is_current))
+            cuts.add(visible_start)
+            cuts.add(visible_end)
+
+        if not regions:
+            return strip
+
+        cuts.add(cell_length)
+        cut_list = sorted(cuts)
+
+        pieces = []
+        pos = 0
+        for cut, piece in zip(cut_list, strip.divide(cut_list)):
+            style = None
+            for start, end, is_current in regions:
+                if pos >= start and cut <= end:
+                    style = (
+                        self.CURRENT_MATCH_STYLE if is_current else self.MATCH_STYLE
+                    )
+                    break
+            if style is not None and piece.cell_length:
+                piece = Strip([Segment(piece.text, style)], piece.cell_length)
+            pieces.append(piece)
+            pos = cut
+        return Strip.join(pieces)
+
 
 class SessionViewerScreen(Screen):
     """Full screen view of a session's conversation."""
 
     # Viewer-specific bindings + shadow app bindings to hide them from footer
     BINDINGS = [
-        Binding("escape", "go_back", "Back"),
+        Binding("escape", "escape", "Back"),
         Binding("q", "go_back", "Back"),
+        Binding("/", "search_forward", "Find"),
+        Binding("?", "search_backward", "Find back", show=False),
+        Binding("n", "next_match", "Next hit", show=False),
+        Binding("N", "prev_match", "Prev hit", show=False),
         Binding("j", "scroll_down", "Down", show=False),
         Binding("k", "scroll_up", "Up", show=False),
         Binding("g", "scroll_top", "Top", show=False),
@@ -704,7 +829,6 @@ class SessionViewerScreen(Screen):
         Binding("m", "noop", "Edit MD", show=False),
         Binding("v", "noop", "View MD", show=False),
         Binding("M", "noop", "Regen MD", show=False),
-        Binding("/", "noop", "Search", show=False),
         Binding("p", "noop", "Project", show=False),
         Binding("r", "noop", "Refresh", show=False),
         Binding("enter", "noop", "View", show=False),
@@ -719,10 +843,21 @@ class SessionViewerScreen(Screen):
     def __init__(self, session: Dict):
         super().__init__()
         self.session = session
+        # In-document search state
+        self.search_term = ""
+        self.search_matches: List[Tuple[int, int, int]] = []
+        self.match_index = -1
+        self.search_direction = 1  # 1 = forward (/), -1 = backward (?)
+        self.search_origin = 0  # scroll position when the search started
+        self.typing_search = False
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield InstantScrollRichLog(id="conversation", wrap=True, highlight=True, markup=True)
+        with Horizontal(id="doc-search-bar"):
+            yield Label("/", id="doc-search-prompt")
+            yield Input(id="doc-search-input")
+            yield Static("", id="doc-search-status")
         yield Footer()
 
     def render_markdown_with_border(self, content: str, style: str, width: int = 0) -> List[Text]:
@@ -945,6 +1080,174 @@ class SessionViewerScreen(Screen):
         log = self.query_one("#conversation", InstantScrollRichLog)
         log.action_page_down()
 
+    # ------------------------------------------------------------------
+    # In-document search (vim style: / ? n N)
+    # ------------------------------------------------------------------
+    @property
+    def log_widget(self) -> InstantScrollRichLog:
+        return self.query_one("#conversation", InstantScrollRichLog)
+
+    def action_search_forward(self):
+        """Open the search prompt, searching downwards."""
+        self._open_search(1)
+
+    def action_search_backward(self):
+        """Open the search prompt, searching upwards."""
+        self._open_search(-1)
+
+    def _open_search(self, direction: int):
+        log = self.log_widget
+        self.search_direction = direction
+        self.search_origin = int(log.scroll_y)
+        self.query_one("#doc-search-prompt", Label).update("/" if direction == 1 else "?")
+        self._set_search_status("")
+        self.query_one("#doc-search-bar").add_class("visible")
+        search_input = self.query_one("#doc-search-input", Input)
+        self.typing_search = True
+        search_input.value = ""
+        search_input.focus()
+
+    def _close_search(self, restore_scroll: bool = False):
+        """Hide the search bar and drop all highlighting."""
+        log = self.log_widget
+        self.typing_search = False
+        if restore_scroll:
+            log.scroll_y = self.search_origin
+        self.search_term = ""
+        self.search_matches = []
+        self.match_index = -1
+        log.clear_matches()
+        self.query_one("#doc-search-bar").remove_class("visible")
+        self.query_one("#doc-search-input", Input).value = ""
+        self._set_search_status("")
+        log.focus()
+
+    def _set_search_status(self, text: str):
+        self.query_one("#doc-search-status", Static).update(text)
+
+    def _run_search(self, term: str):
+        """Search for term and jump to the nearest hit from the start point."""
+        log = self.log_widget
+        self.search_term = term
+
+        if not term:
+            self.search_matches = []
+            self.match_index = -1
+            log.clear_matches()
+            log.scroll_y = self.search_origin
+            self._set_search_status("")
+            return
+
+        self.search_matches = log.find_matches(term)
+        if not self.search_matches:
+            self.match_index = -1
+            log.clear_matches()
+            log.scroll_y = self.search_origin
+            self._set_search_status(f"Pattern not found: {term}")
+            return
+
+        self.match_index = self._nearest_match(self.search_origin, self.search_direction)
+        self._goto_match()
+
+    def _nearest_match(self, anchor_line: int, direction: int) -> int:
+        """Index of the first match at/after (or at/before) anchor_line."""
+        lines = [m[0] for m in self.search_matches]
+        if direction == 1:
+            for i, line in enumerate(lines):
+                if line >= anchor_line:
+                    return i
+            return 0  # wrap to the top
+        for i in range(len(lines) - 1, -1, -1):
+            if lines[i] <= anchor_line:
+                return i
+        return len(lines) - 1  # wrap to the bottom
+
+    def _goto_match(self, wrapped: bool = False):
+        """Highlight the current match and scroll it into view."""
+        log = self.log_widget
+        match = self.search_matches[self.match_index]
+        log.set_matches(self.search_matches, current=match)
+
+        line = match[0]
+        height = log.scrollable_content_region.height or log.size.height
+        top = int(log.scroll_y)
+        if not (top <= line < top + height):
+            # Off screen: put the hit a third of the way down for context
+            log.scroll_y = max(0, line - height // 3)
+
+        status = f"{self.match_index + 1}/{len(self.search_matches)}"
+        if wrapped:
+            status += " (wrapped)"
+        self._set_search_status(status)
+
+    def _step_match(self, step: int):
+        if not self.search_term:
+            self.app.bell()
+            return
+        if not self.search_matches:
+            self._set_search_status(f"Pattern not found: {self.search_term}")
+            return
+
+        log = self.log_widget
+        top = int(log.scroll_y)
+        height = log.scrollable_content_region.height or log.size.height
+        current_line = self.search_matches[self.match_index][0]
+
+        if not (top <= current_line < top + height):
+            # The user scrolled away from the current hit - resume from the
+            # part of the document they are actually looking at.
+            anchor = top if step > 0 else top + max(0, height - 1)
+            self.match_index = self._nearest_match(anchor, 1 if step > 0 else -1)
+            self._goto_match()
+            return
+
+        total = len(self.search_matches)
+        new_index = (self.match_index + step) % total
+        wrapped = (step > 0 and new_index <= self.match_index) or (
+            step < 0 and new_index >= self.match_index
+        )
+        self.match_index = new_index
+        self._goto_match(wrapped=wrapped)
+
+    def action_next_match(self):
+        """Jump to the next hit (in the direction the search was started)."""
+        self._step_match(self.search_direction)
+
+    def action_prev_match(self):
+        """Jump to the previous hit."""
+        self._step_match(-self.search_direction)
+
+    def action_escape(self):
+        """Escape cancels a search in progress, clears hits, then goes back."""
+        if self.typing_search:
+            self._close_search(restore_scroll=True)
+        elif self.query_one("#doc-search-bar").has_class("visible"):
+            self._close_search()
+        else:
+            self.action_go_back()
+
+    def on_input_changed(self, event: Input.Changed):
+        """Incremental search as the user types."""
+        if event.input.id != "doc-search-input":
+            return
+        event.stop()
+        if not self.typing_search:
+            return
+        self._run_search(event.value)
+
+    def on_input_submitted(self, event: Input.Submitted):
+        """Accept the search: keep the hits, hand focus back to the document."""
+        if event.input.id != "doc-search-input":
+            return
+        event.stop()
+        if not event.value:
+            self._close_search(restore_scroll=True)
+            return
+        if event.value != self.search_term:
+            self._run_search(event.value)
+        self.typing_search = False
+        self.log_widget.focus()
+
 
 class SearchInput(Input):
     """Search input with custom handling."""
@@ -964,7 +1267,45 @@ class ClaudeHistoryTUI(App):
 
     #conversation {
         width: 100%;
-        height: 100%;
+        height: 1fr;
+    }
+
+    /* Vim-style in-document search bar (session viewer) */
+    #doc-search-bar {
+        height: 1;
+        width: 100%;
+        display: none;
+        background: $panel;
+    }
+
+    #doc-search-bar.visible {
+        display: block;
+    }
+
+    #doc-search-prompt {
+        width: 1;
+        height: 1;
+        color: $accent;
+    }
+
+    #doc-search-input {
+        width: 1fr;
+        height: 1;
+        border: none;
+        padding: 0;
+        background: $panel;
+    }
+
+    #doc-search-input:focus {
+        border: none;
+        background: $panel;
+    }
+
+    #doc-search-status {
+        width: auto;
+        height: 1;
+        padding: 0 1;
+        color: $text-muted;
     }
 
     #main-container {

@@ -253,6 +253,27 @@ ch-list
 | `r` | Refresh session list |
 | `q` | Quit |
 
+#### In the conversation view
+
+Vim-style search inside the open conversation:
+
+| Key | Action |
+|-----|--------|
+| `/` | Search forwards - type to jump to hits as you type |
+| `?` | Search backwards |
+| `Enter` | Accept the search, hand focus back to the document |
+| `n` | Jump to the next hit (same direction as the search) |
+| `N` | Jump to the previous hit |
+| `Esc` | Cancel the search / clear highlights, then leave the view |
+| `j/k`, `g/G`, `PgUp/PgDn` | Scroll |
+| `q` | Back to the session list |
+
+Every hit is highlighted in yellow, the current one in cyan, and the bar at the
+bottom shows `3/17` style match counts (plus `(wrapped)` when the search rolls
+past the end). Searches are regex (an invalid pattern falls back to a literal
+match) and case-insensitive unless the term contains an uppercase character,
+like vim's `smartcase`.
+
 ### Markdown Export
 
 The TUI automatically generates and caches markdown files from your sessions:
